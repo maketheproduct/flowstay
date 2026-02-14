@@ -1,0 +1,110 @@
+# Xcode
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/*.xcscheme
+!*.xcodeproj/*.xcworkspacedata
+*.xcworkspace/*
+!*.xcworkspace/contents.xcworkspacedata
+
+# Swift Package Manager
+.build/
+.clang-module-cache/
+.swiftpm/
+Packages/
+*.xcodeproj
+xcuserdata/
+
+# Build artifacts
+build/
+dist/
+bin/
+archives/
+*.app
+*.dmg
+appcast.xml
+/tools/
+Sparkle.framework/
+sparkle.app/
+Sparkle Test App.app/
+Symbols/
+
+# Code signing certificates and keys (SECURITY: DO NOT COMMIT)
+*.p12
+*.cer
+*.certSigningRequest
+*_private_key
+sparkle_eddsa_private.pem
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Thumbnails
+._*
+
+# Files that might appear in the root of a volume
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Directories potentially created on remote AFP share
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# IDE
+.vscode/
+.idea/
+
+# AI/Agent tooling
+.serena/
+.claude/
+.opencode/
+.github/skills/
+
+# Logs
+*.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+
+# Dependency directories
+node_modules/
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variables file
+.env
+.env.local
+.env.test
+
+# Stores VSCode versions used for testing VSCode extensions
+.vscode-test.env.local
+
+# Repo hygiene
+*.sh
+*.md
+!README.md

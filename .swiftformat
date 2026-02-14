@@ -1,0 +1,9 @@
+--swiftversion 6.0
+--indent 4
+--linebreaks lf
+--stripunusedargs closure-only
+--selfrequired
+--wraparguments before-first
+--wrapcollections before-first
+--wrapparameters before-first
+--disable trailingClosures

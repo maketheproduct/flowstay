@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Hardened Runtime enabled with no JIT/unsigned-memory/library-validation exceptions -->
+    
+    <!-- Audio and Microphone Access -->
+    <key>com.apple.security.device.microphone</key>
+    <true/>
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+    
+    <!-- Network Access for Model Downloads -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    
+    <!-- File System Access -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+    
+    <!-- App Integration and Automation -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+    
+    <!-- Disable App Sandbox for Full System Integration -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+    
+    <!-- Speech Recognition -->
+    <key>com.apple.security.device.speech-recognition</key>
+    <true/>
+    <key>com.apple.security.personal-information.speech-recognition</key>
+    <true/>
+    
+    <!-- Input Monitoring for Global Hotkeys -->
+    <key>com.apple.security.device.input-monitoring</key>
+    <true/>
+    
+    <!-- Accessibility Access -->
+    <key>com.apple.security.automation.accessibility</key>
+    <true/>
+</dict>
+</plist>

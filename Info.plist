@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- App Identity -->
+    <key>CFBundleDevelopmentRegion</key>
+    <string>$(DEVELOPMENT_LANGUAGE)</string>
+    <key>CFBundleDisplayName</key>
+    <string>Flowstay</string>
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleIconName</key>
+    <string>AppIcon</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>$(PRODUCT_NAME)</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.4</string>
+    <key>CFBundleVersion</key>
+    <string>20</string>
+
+    <!-- Privacy Usage Descriptions -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Flowstay needs microphone access to capture your voice for dictation. All processing is done locally on your Mac for privacy.</string>
+    
+
+    
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Flowstay uses Apple Events to integrate with other applications for pasting transcribed text.</string>
+
+    <!-- App Transport Security -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <false/>
+        <key>NSExceptionDomains</key>
+        <dict>
+            <!-- Allow secure connections to model download servers -->
+            <key>api.flowstay.app</key>
+            <dict>
+                <key>NSExceptionRequiresForwardSecrecy</key>
+                <false/>
+                <key>NSExceptionMinimumTLSVersion</key>
+                <string>TLSv1.2</string>
+                <key>NSThirdPartyExceptionRequiresForwardSecrecy</key>
+                <false/>
+            </dict>
+        </dict>
+    </dict>
+
+    <!-- Required Device Capabilities -->
+    <key>UIRequiredDeviceCapabilities</key>
+    <array>
+        <string>microphone</string>
+    </array>
+
+    <!-- Supported Platforms -->
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+
+    <!-- Agent Application Configuration -->
+    <key>LSUIElement</key>
+    <false/>
+    
+    <key>LSBackgroundOnly</key>
+    <false/>
+    
+    <!-- App Behavior for Menu Bar Apps -->
+    <key>NSSupportsAutomaticTermination</key>
+    <false/>
+    
+    <key>NSSupportsSuddenTermination</key>
+    <false/>
+    
+    <!-- Ensure app stays active in background -->
+    <key>LSMinimumSystemVersionByArchitecture</key>
+    <dict>
+        <key>x86_64</key>
+        <string>14.0</string>
+        <key>arm64</key>
+        <string>14.0</string>
+    </dict>
+    
+    <!-- Menu bar app specific -->
+    <key>NSMainNibFile</key>
+    <string></string>
+    
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <!-- URL Schemes -->
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.flowstay.url-handler</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>flowstay</string>
+            </array>
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+        </dict>
+    </array>
+
+    <!-- Document Types (if supporting model file import) -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Whisper Model</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.flowstay.whisper-model</string>
+            </array>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+        </dict>
+    </array>
+
+    <!-- Exported UTI for Whisper models -->
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.data</string>
+            </array>
+            <key>UTTypeDescription</key>
+            <string>Whisper Speech Recognition Model</string>
+            <key>UTTypeIdentifier</key>
+            <string>com.flowstay.whisper-model</string>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>model</string>
+                    <string>bin</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>application/octet-stream</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+
+    <!-- Services (for system integration) -->
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict>
+                <key>default</key>
+                <string>Dictate with Flowstay</string>
+            </dict>
+            <key>NSMessage</key>
+            <string>dictateText</string>
+            <key>NSPortName</key>
+            <string>Flowstay</string>
+            <key>NSSendTypes</key>
+            <array>
+                <string>NSStringPboardType</string>
+            </array>
+            <key>NSReturnTypes</key>
+            <array>
+                <string>NSStringPboardType</string>
+            </array>
+        </dict>
+    </array>
+
+    <!-- Accessibility -->
+    <key>NSAccessibilityDescription</key>
+    <string>Flowstay provides voice dictation with local processing for privacy and accessibility.</string>
+
+    <!-- Hardened Runtime Entitlements (for notarization) -->
+    <key>com.apple.security.device.microphone</key>
+    <true/>
+    
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!-- App Sandbox (disable for accessibility features) -->
+    <key>com.apple.security.app-sandbox</key>
+    <false/>
+
+    <!-- Network access for model downloads -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+
+    <!-- File access for models and transcripts -->
+    <key>com.apple.security.files.user-selected.read-write</key>
+    <true/>
+    
+    <key>com.apple.security.files.downloads.read-write</key>
+    <true/>
+
+    <!-- Automation and accessibility -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+
+    <!-- JIT (if using Metal for Whisper.cpp) -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+
+    <!-- Disable library validation (for third-party ML libraries) -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <!-- Copyright and Credits -->
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2025 Flowstay. All rights reserved.</string>
+
+    <!-- High Resolution Capable -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+
+    <!-- Appearance -->
+    <key>NSRequiresAquaSystemAppearance</key>
+    <false/>
+
+    <!-- App Store metadata (if distributing via App Store) -->
+    <key>ITSAppUsesNonExemptEncryption</key>
+    <false/>
+</dict>
+</plist>
