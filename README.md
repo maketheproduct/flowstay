@@ -1,5 +1,9 @@
 # Flowstay
 
+<p align="center">
+  <img src="screenshots/flowstay-icon.png" alt="Flowstay app icon" width="128" height="128">
+</p>
+
 Flowstay is a macOS menu bar app for fast transcription with smart workflows.
 
 ## Screenshots
