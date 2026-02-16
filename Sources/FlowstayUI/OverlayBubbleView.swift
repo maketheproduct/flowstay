@@ -69,6 +69,7 @@ private struct WaveformOrbView: View {
     let waveformSamples: [Float]
     let isActive: Bool
     let reduceMotion: Bool
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack {
@@ -101,12 +102,23 @@ private struct WaveformOrbView: View {
                 let height = max(2, 2 + (28 * sample * mod))
 
                 Capsule(style: .continuous)
-                    .fill(Color.white.opacity(0.6 + (0.35 * activity)))
+                    .fill(waveformBarColor(activity: activity))
                     .frame(width: 3, height: height)
             }
         }
-        .shadow(color: Color.blue.opacity(0.18), radius: 5, x: 0, y: 0)
+        .shadow(color: waveformShadowColor, radius: 5, x: 0, y: 0)
         .frame(width: 30, height: 16)
+    }
+
+    private func waveformBarColor(activity: Double) -> Color {
+        if colorScheme == .dark {
+            return Color.white.opacity(0.6 + (0.35 * activity))
+        }
+        return Color.black.opacity(0.45 + (0.4 * activity))
+    }
+
+    private var waveformShadowColor: Color {
+        colorScheme == .dark ? Color.blue.opacity(0.18) : Color.black.opacity(0.14)
     }
 
     private func bucketedSamples(count: Int) -> [Float] {
