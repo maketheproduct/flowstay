@@ -54,6 +54,12 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private var firstRecordingStartAt: Date?
     private var hotkeyListenerReadyAt: Date?
 
+    private struct PersonaProcessingOutcome {
+        let processedText: String
+        let usedPersonaId: String?
+        let overlayOutcomeSuccess: Bool
+    }
+
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -156,142 +162,194 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             guard let self else { return }
 
             Task { @MainActor in
-                guard let appState = self.appState,
-                      let permissionManager = self.permissionManager,
-                      let personasEngine = self.personasEngine
-                else {
-                    self.logger.error("[AppDelegate] Missing required state objects in transcription callback")
-                    return
-                }
-
-                self.logger.info("[AppDelegate] Transcription complete (\(finalText.count) chars, duration: \(String(format: "%.1f", duration))s)")
-
-                let completionOutcome = FinalTranscriptionPolicy.classify(finalText)
-                let finalTranscription: String
-                switch completionOutcome {
-                case .noSpeech:
-                    self.logger.warning("[AppDelegate] No transcription detected (trimmed empty). Showing overlay error state")
-                    self.recordingTargetApp = nil
-                    if self.consumeAwaitingOverlayCompletion() {
-                        self.stageOverlayOutcome(success: false)
-                        self.applyOverlayVisibility(reason: "transcription-empty-no-speech")
-                    } else {
-                        self.logger.debug("[AppDelegate] Empty transcription callback arrived with no awaiting overlay completion state")
-                    }
-                    return
-
-                case let .transcript(trimmed):
-                    finalTranscription = trimmed
-                }
-
-                // Use app captured at recording start to keep routing stable even if focus changed.
-                let detectedApp = self.recordingTargetApp ?? AppDetectionService.shared.currentApp
-
-                // Process with personas if enabled
-                var processedText = finalTranscription
-                var usedPersonaId: String? = nil
-                var overlayOutcomeSuccess = true
-
-                if appState.personasEnabled {
-                    // Check if we have an app-specific rule
-                    var selectedPersonaId = appState.selectedPersonaId // Default
-
-                    if appState.useSmartAppDetection,
-                       let app = detectedApp,
-                       let appPersonaId = appState.getPersonaForApp(app.bundleId)
-                    {
-                        selectedPersonaId = appPersonaId
-                        self.logger.info("[AppDelegate] Using app-specific persona for \(app.name): \(appPersonaId)")
-                    } else {
-                        self.logger.info("[AppDelegate] Using default persona: \(selectedPersonaId ?? "none")")
-                    }
-
-                    // Treat sentinel "none" as explicit skip
-                    if selectedPersonaId == "none" {
-                        self.logger.info("[AppDelegate] Skipping persona per app rule")
-                    }
-
-                    // Get the instruction for the currently selected persona
-                    if let personaId = selectedPersonaId,
-                       let persona = appState.allPersonas.first(where: { $0.id == personaId })
-                    {
-                        self.logger.info("[AppDelegate] Processing with persona: \(persona.name)")
-
-                        // Start a timer to notify user if processing takes too long (5 seconds)
-                        let processingTimer = Task {
-                            try? await Task.sleep(for: .seconds(5))
-                            // Only send notification if not cancelled (processing still ongoing)
-                            guard !Task.isCancelled else { return }
-                            NotificationManager.shared.sendNotification(
-                                title: "Processing transcription...",
-                                body: "AI is still working on your text",
-                                identifier: "processing-delay"
-                            )
-                        }
-
-                        let result = await personasEngine.processTranscriptionWithResult(
-                            finalTranscription,
-                            instruction: persona.instruction,
-                            appState: appState
-                        )
-                        processedText = result.text
-                        overlayOutcomeSuccess = result.isSuccess
-
-                        // Cancel the timer (processing completed)
-                        processingTimer.cancel()
-
-                        // Capture the persona ID that was used
-                        usedPersonaId = personaId
-
-                        self.logger.info("[AppDelegate] Personas processing complete (\(processedText.count) chars)")
-                    }
-                }
-
-                // Clear snapshot once this transcription is fully processed.
-                self.recordingTargetApp = nil
-
-                // Add to history with both original and processed text
-                appState.recentTranscripts.insert(
-                    TranscriptItem(
-                        text: processedText,
-                        originalText: usedPersonaId != nil ? finalTranscription : nil,
-                        personaId: usedPersonaId,
-                        timestamp: Date(),
-                        duration: duration
-                    ),
-                    at: 0
-                )
-
-                // Save to persistent history (markdown files)
-                let record = TranscriptionRecord(
-                    duration: duration,
-                    rawText: finalTranscription,
-                    processedText: processedText,
-                    personaId: usedPersonaId,
-                    personaName: usedPersonaId != nil ? appState.allPersonas.first(where: { $0.id == usedPersonaId })?.name : nil,
-                    appBundleId: detectedApp?.bundleId,
-                    appName: detectedApp?.name
-                )
-                await TranscriptionHistoryStore.shared.addIgnoringErrors(record)
-
-                // Auto-paste if enabled and we have accessibility permission
-                if appState.autoPasteEnabled, permissionManager.hasAccessibilityPermission {
-                    self.logger.info("[AppDelegate] Auto-pasting transcript...")
-                    await TextPaster.pasteText(processedText)
-                } else if appState.autoPasteEnabled {
-                    self.logger.info("[AppDelegate] Auto-paste enabled but accessibility permission not granted")
-                }
-
-                // Play completion sound AFTER paste (or if no paste, after processing)
-                if appState.soundFeedbackEnabled {
-                    SoundManager.shared.playTranscriptionComplete()
-                }
-
-                if self.consumeAwaitingOverlayCompletion() {
-                    self.stageOverlayOutcome(success: overlayOutcomeSuccess)
-                    self.applyOverlayVisibility(reason: "transcription-complete")
-                }
+                await self.handleTranscriptionCompletion(finalText: finalText, duration: duration)
             }
+        }
+    }
+
+    private func handleTranscriptionCompletion(finalText: String, duration: TimeInterval) async {
+        guard let appState, let permissionManager, let personasEngine else {
+            logger.error("[AppDelegate] Missing required state objects in transcription callback")
+            return
+        }
+
+        logger.info(
+            "[AppDelegate] Transcription complete (\(finalText.count) chars, duration: \(String(format: "%.1f", duration))s)"
+        )
+
+        guard let finalTranscription = resolveFinalTranscriptionOrHandleNoSpeech(finalText) else {
+            return
+        }
+
+        // Use app captured at recording start to keep routing stable even if focus changed.
+        let detectedApp = recordingTargetApp ?? AppDetectionService.shared.currentApp
+        let personaOutcome = await processPersonaIfNeeded(
+            finalTranscription: finalTranscription,
+            appState: appState,
+            personasEngine: personasEngine,
+            detectedApp: detectedApp
+        )
+
+        // Clear snapshot once this transcription is fully processed.
+        recordingTargetApp = nil
+
+        await persistTranscription(
+            finalTranscription: finalTranscription,
+            processedText: personaOutcome.processedText,
+            usedPersonaId: personaOutcome.usedPersonaId,
+            duration: duration,
+            appState: appState,
+            detectedApp: detectedApp
+        )
+
+        await performAutoPasteIfNeeded(
+            processedText: personaOutcome.processedText,
+            appState: appState,
+            permissionManager: permissionManager
+        )
+
+        // Play completion sound AFTER paste (or if no paste, after processing)
+        if appState.soundFeedbackEnabled {
+            SoundManager.shared.playTranscriptionComplete()
+        }
+
+        if consumeAwaitingOverlayCompletion() {
+            stageOverlayOutcome(success: personaOutcome.overlayOutcomeSuccess)
+            applyOverlayVisibility(reason: "transcription-complete")
+        }
+    }
+
+    private func resolveFinalTranscriptionOrHandleNoSpeech(_ finalText: String) -> String? {
+        switch FinalTranscriptionPolicy.classify(finalText) {
+        case .noSpeech:
+            logger.warning("[AppDelegate] No transcription detected (trimmed empty). Showing overlay error state")
+            recordingTargetApp = nil
+            if consumeAwaitingOverlayCompletion() {
+                stageOverlayOutcome(success: false)
+                applyOverlayVisibility(reason: "transcription-empty-no-speech")
+            } else {
+                logger.debug("[AppDelegate] Empty transcription callback arrived with no awaiting overlay completion state")
+            }
+            return nil
+
+        case let .transcript(trimmed):
+            return trimmed
+        }
+    }
+
+    private func processPersonaIfNeeded(
+        finalTranscription: String,
+        appState: AppState,
+        personasEngine: PersonasEngine,
+        detectedApp: DetectedApp?
+    ) async -> PersonaProcessingOutcome {
+        var processedText = finalTranscription
+        var usedPersonaId: String?
+        var overlayOutcomeSuccess = true
+
+        guard appState.personasEnabled else {
+            return PersonaProcessingOutcome(
+                processedText: processedText,
+                usedPersonaId: usedPersonaId,
+                overlayOutcomeSuccess: overlayOutcomeSuccess
+            )
+        }
+
+        var selectedPersonaId = appState.selectedPersonaId
+        if appState.useSmartAppDetection,
+           let app = detectedApp,
+           let appPersonaId = appState.getPersonaForApp(app.bundleId) {
+            selectedPersonaId = appPersonaId
+            logger.info("[AppDelegate] Using app-specific persona for \(app.name): \(appPersonaId)")
+        } else {
+            logger.info("[AppDelegate] Using default persona: \(selectedPersonaId ?? "none")")
+        }
+
+        if selectedPersonaId == "none" {
+            logger.info("[AppDelegate] Skipping persona per app rule")
+        }
+
+        guard let personaId = selectedPersonaId,
+              let persona = appState.allPersonas.first(where: { $0.id == personaId })
+        else {
+            return PersonaProcessingOutcome(
+                processedText: processedText,
+                usedPersonaId: usedPersonaId,
+                overlayOutcomeSuccess: overlayOutcomeSuccess
+            )
+        }
+
+        logger.info("[AppDelegate] Processing with persona: \(persona.name)")
+
+        let processingTimer = Task {
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            NotificationManager.shared.sendNotification(
+                title: "Processing transcription...",
+                body: "AI is still working on your text",
+                identifier: "processing-delay"
+            )
+        }
+
+        let result = await personasEngine.processTranscriptionWithResult(
+            finalTranscription,
+            instruction: persona.instruction,
+            appState: appState
+        )
+        processedText = result.text
+        overlayOutcomeSuccess = result.isSuccess
+        processingTimer.cancel()
+        usedPersonaId = personaId
+
+        logger.info("[AppDelegate] Personas processing complete (\(processedText.count) chars)")
+        return PersonaProcessingOutcome(
+            processedText: processedText,
+            usedPersonaId: usedPersonaId,
+            overlayOutcomeSuccess: overlayOutcomeSuccess
+        )
+    }
+
+    private func persistTranscription(
+        finalTranscription: String,
+        processedText: String,
+        usedPersonaId: String?,
+        duration: TimeInterval,
+        appState: AppState,
+        detectedApp: DetectedApp?
+    ) async {
+        appState.recentTranscripts.insert(
+            TranscriptItem(
+                text: processedText,
+                originalText: usedPersonaId != nil ? finalTranscription : nil,
+                personaId: usedPersonaId,
+                timestamp: Date(),
+                duration: duration
+            ),
+            at: 0
+        )
+
+        let record = TranscriptionRecord(
+            duration: duration,
+            rawText: finalTranscription,
+            processedText: processedText,
+            personaId: usedPersonaId,
+            personaName: usedPersonaId != nil ? appState.allPersonas.first(where: { $0.id == usedPersonaId })?.name : nil,
+            appBundleId: detectedApp?.bundleId,
+            appName: detectedApp?.name
+        )
+        await TranscriptionHistoryStore.shared.addIgnoringErrors(record)
+    }
+
+    private func performAutoPasteIfNeeded(
+        processedText: String,
+        appState: AppState,
+        permissionManager: PermissionManager
+    ) async {
+        if appState.autoPasteEnabled, permissionManager.hasAccessibilityPermission {
+            logger.info("[AppDelegate] Auto-pasting transcript...")
+            await TextPaster.pasteText(processedText)
+        } else if appState.autoPasteEnabled {
+            logger.info("[AppDelegate] Auto-paste enabled but accessibility permission not granted")
         }
     }
 
