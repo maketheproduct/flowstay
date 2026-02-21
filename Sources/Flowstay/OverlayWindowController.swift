@@ -425,26 +425,17 @@ final class OverlayWindowController: NSObject {
             let isLeftExtension = layoutMode == .leftExtension
 
             if hasNotchRegion && isLeftExtension {
-                // Notch screen, leftExtension: start as 1pt sliver at right edge
-                // (invisible against the notch) and slide out to the left.
-                let sliverFrame = NSRect(
-                    x: placement.frame.maxX - 1,
-                    y: placement.frame.origin.y,
-                    width: 1,
-                    height: placement.frame.height
-                )
-                window.setFrame(sliverFrame, display: true)
-                window.alphaValue = 1
+                // Notch screen, leftExtension: reveal in place to avoid
+                // an initial leftward slide on first transcription start.
+                window.setFrame(placement.frame, display: true)
+                window.alphaValue = 0
                 window.orderFrontRegardless()
 
-                frameAnimationGeneration += 1
-                let generation = frameAnimationGeneration
-                animateWindowFrameTransition(
-                    from: sliverFrame,
-                    to: placement.frame,
-                    reduceMotion: reduceMotion,
-                    generation: generation
-                )
+                NSAnimationContext.runAnimationGroup { context in
+                    context.duration = Constants.revealDuration
+                    context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                    self.window.animator().alphaValue = 1
+                }
             } else if !hasNotchRegion {
                 // Non-notch screen: slide down from above the screen edge.
                 let aboveFrame = NSRect(

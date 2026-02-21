@@ -715,11 +715,15 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         hotkeyStartupFeedbackTask?.cancel()
         guard let button = statusItem?.button else { return }
 
-        let feedbackIcon = NSImage(
-            systemSymbolName: MenuBarIcon.systemIconName(isRecording: true),
-            accessibilityDescription: "Flowstay feedback"
-        )
-        button.image = feedbackIcon
+        if let customFeedbackIcon = MenuBarIcon.loadIcon(isRecording: true) {
+            button.image = customFeedbackIcon
+        } else {
+            let fallbackFeedbackIcon = NSImage(
+                systemSymbolName: MenuBarIcon.systemIconName(isRecording: true),
+                accessibilityDescription: "Flowstay feedback"
+            )
+            button.image = fallbackFeedbackIcon
+        }
 
         hotkeyStartupFeedbackTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -795,6 +799,19 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
     func closePopover() {
         popover.performClose(nil)
+    }
+
+    func toggleTranscriptionFromMenuBar() {
+        if HotkeyStartPolicy.shouldShowStartPendingOnAccepted(
+            isRecording: engineCoordinator.isRecording,
+            isAwaitingCompletion: isAwaitingTranscriptionCompletion,
+            permissionsGranted: permissionManager.criticalPermissionsGranted,
+            modelsDownloaded: engineCoordinator.isModelDownloaded()
+        ) {
+            setHotkeyStartPending(true)
+        }
+
+        handleHotkeyToggleRequested()
     }
 
     // MARK: - Settings Window

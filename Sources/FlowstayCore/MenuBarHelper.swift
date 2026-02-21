@@ -8,6 +8,7 @@ public protocol MenuBarPopoverController: AnyObject {
     func closePopover()
     func openSettingsWindow()
     func openOnboardingWindow()
+    func toggleTranscriptionFromMenuBar()
 }
 
 /// Helper to programmatically control the menu bar popover and windows
@@ -39,5 +40,10 @@ public class MenuBarHelper {
     /// Open the onboarding window
     public static func openOnboarding() {
         delegate?.openOnboardingWindow()
+    }
+
+    /// Toggle transcription using the app delegate policy path.
+    public static func toggleTranscription() {
+        delegate?.toggleTranscriptionFromMenuBar()
     }
 }

@@ -200,23 +200,7 @@ public struct MenuBarView: View {
             ModernRecordingButton(
                 isRecording: engineCoordinator.isRecording,
                 action: {
-                    Task {
-                        if engineCoordinator.isRecording {
-                            await engineCoordinator.stopRecording()
-                            // Transcription completion is handled via callback in FlowstayApp
-                        } else {
-                            // Request permissions first if needed
-                            if !permissionManager.criticalPermissionsGranted {
-                                openOnboardingWindow()
-                            } else {
-                                do {
-                                    try await engineCoordinator.startRecording()
-                                } catch {
-                                    print("Failed to start recording: \(error)")
-                                }
-                            }
-                        }
-                    }
+                    MenuBarHelper.toggleTranscription()
                 }
             )
             .padding(.horizontal, 16)
