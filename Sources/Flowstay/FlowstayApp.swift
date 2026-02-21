@@ -258,7 +258,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         var selectedPersonaId = appState.selectedPersonaId
         if appState.useSmartAppDetection,
            let app = detectedApp,
-           let appPersonaId = appState.getPersonaForApp(app.bundleId) {
+           let appPersonaId = appState.getPersonaForApp(app.bundleId)
+        {
             selectedPersonaId = appPersonaId
             logger.info("[AppDelegate] Using app-specific persona for \(app.name): \(appPersonaId)")
         } else {
@@ -403,23 +404,23 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 guard let self else { return }
 
                 if isRecording {
-                    if self.firstRecordingStartAt == nil {
+                    if firstRecordingStartAt == nil {
                         let now = Date()
-                        self.firstRecordingStartAt = now
-                        self.logStartupMetric("first recording start", at: now)
+                        firstRecordingStartAt = now
+                        logStartupMetric("first recording start", at: now)
                     }
                     AppDetectionService.shared.detectFrontmostApp()
-                    self.recordingTargetApp = AppDetectionService.shared.currentApp
-                    if let app = self.recordingTargetApp {
-                        self.logger.info("[AppDelegate] Captured recording target app: \(app.name) (\(app.bundleId))")
+                    recordingTargetApp = AppDetectionService.shared.currentApp
+                    if let app = recordingTargetApp {
+                        logger.info("[AppDelegate] Captured recording target app: \(app.name) (\(app.bundleId))")
                     } else {
-                        self.logger.info("[AppDelegate] Recording started with no detected target app")
+                        logger.info("[AppDelegate] Recording started with no detected target app")
                     }
                 }
 
-                self.updateStatusIcon(isRecording: isRecording)
-                self.handleOverlayRecordingTransition(isRecording: isRecording)
-                self.previousRecordingState = isRecording
+                updateStatusIcon(isRecording: isRecording)
+                handleOverlayRecordingTransition(isRecording: isRecording)
+                previousRecordingState = isRecording
             }
             .store(in: &cancellables)
     }
@@ -430,12 +431,12 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             .sink { [weak self] isReady in
                 guard let self else { return }
                 guard isReady else { return }
-                guard self.queuedStartRequest else { return }
+                guard queuedStartRequest else { return }
                 let decision = HotkeyStartPolicy.onModelsReady(
-                    queuedStartRequest: self.queuedStartRequest,
+                    queuedStartRequest: queuedStartRequest,
                     modelsReady: isReady
                 )
-                self.applyHotkeyDecision(decision)
+                applyHotkeyDecision(decision)
             }
             .store(in: &cancellables)
     }
@@ -616,11 +617,11 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     do {
-                        try await self.engineCoordinator.startRecording()
+                        try await engineCoordinator.startRecording()
                     } catch {
-                        self.setHotkeyStartPending(false)
-                        self.logger.error("[AppDelegate] Failed to start recording from hotkey: \(error.localizedDescription)")
-                        self.handleHotkeyFeedback(.error)
+                        setHotkeyStartPending(false)
+                        logger.error("[AppDelegate] Failed to start recording from hotkey: \(error.localizedDescription)")
+                        handleHotkeyFeedback(.error)
                     }
                 }
 
@@ -660,8 +661,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 return
             }
 
-            let timeoutDecision = HotkeyStartPolicy.onWarmupTimeout(queuedStartRequest: self.queuedStartRequest)
-            self.applyHotkeyDecision(timeoutDecision)
+            let timeoutDecision = HotkeyStartPolicy.onWarmupTimeout(queuedStartRequest: queuedStartRequest)
+            applyHotkeyDecision(timeoutDecision)
         }
     }
 
@@ -788,11 +789,11 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             do {
                 try await Task.sleep(for: .milliseconds(140))
             } catch {
-                self.hotkeyStartupFeedbackTask = nil
+                hotkeyStartupFeedbackTask = nil
                 return
             }
-            self.updateStatusIcon(isRecording: self.engineCoordinator.isRecording)
-            self.hotkeyStartupFeedbackTask = nil
+            updateStatusIcon(isRecording: engineCoordinator.isRecording)
+            hotkeyStartupFeedbackTask = nil
         }
     }
 

@@ -235,7 +235,7 @@ class AppInitializationService: ObservableObject {
         print("[AppInitializationService] Starting model prewarm task in background...")
         prewarmTask = Task { [weak self] in
             guard let self else { return }
-            await self.engineCoordinator.preInitializeAllModels()
+            await engineCoordinator.preInitializeAllModels()
             print("[AppInitializationService] ✅ Models prewarm task finished")
             await MainActor.run {
                 self.prewarmTask = nil

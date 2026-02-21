@@ -36,7 +36,7 @@ final class OverlayWindowController: NSObject {
         let centerGapWidth: CGFloat
     }
 
-    private struct TopBarMetricsResolver {
+    private enum TopBarMetricsResolver {
         static func resolveHeight(
             for screen: NSScreen,
             minimumHeight: CGFloat,
@@ -44,11 +44,10 @@ final class OverlayWindowController: NSObject {
             fallbackHeight: CGFloat
         ) -> CGFloat {
             let visibleTopInset = max(0, screen.frame.maxY - screen.visibleFrame.maxY)
-            let safeAreaTopInset: CGFloat
-            if #available(macOS 12.0, *) {
-                safeAreaTopInset = max(0, screen.safeAreaInsets.top)
+            let safeAreaTopInset: CGFloat = if #available(macOS 12.0, *) {
+                max(0, screen.safeAreaInsets.top)
             } else {
-                safeAreaTopInset = 0
+                0
             }
 
             return OverlayTopBarMetricsPolicy.resolveHeight(
@@ -314,7 +313,8 @@ final class OverlayWindowController: NSObject {
 
     private func updateIconStateOnly(_ newState: OverlayDisplayState) {
         guard displayState != newState else { return }
-        logger.debug("[OverlayWindow] icon transition \(String(describing: self.displayState)) -> \(String(describing: newState))")
+        let previousState = displayState
+        logger.debug("[OverlayWindow] icon transition \(String(describing: previousState)) -> \(String(describing: newState))")
         displayState = newState
         presentationModel.displayState = newState
     }
@@ -335,9 +335,11 @@ final class OverlayWindowController: NSObject {
         if !layoutChanged, !rightSegmentChanged {
             return
         }
+        let previousLayoutMode = layoutMode
+        let previousRightSegmentMode = rightSegmentMode
 
         logger.debug(
-            "[OverlayWindow] container transition layout \(String(describing: self.layoutMode)) -> \(String(describing: layout)), right \(String(describing: self.rightSegmentMode)) -> \(String(describing: rightSegment))"
+            "[OverlayWindow] container transition layout \(String(describing: previousLayoutMode)) -> \(String(describing: layout)), right \(String(describing: previousRightSegmentMode)) -> \(String(describing: rightSegment))"
         )
         if layoutChanged {
             let nextWidthMode = layout == .splitAroundNotch ? "expanded" : "collapsed-left"
@@ -376,13 +378,14 @@ final class OverlayWindowController: NSObject {
         let workItem = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.rightOutroGeneration == generation else { return }
-                guard self.rightSegmentMode == .outro else { return }
+                let controller = self
+                guard controller.rightOutroGeneration == generation else { return }
+                guard controller.rightSegmentMode == .outro else { return }
 
-                let expandedFrame = self.window.frame
+                let expandedFrame = controller.window.frame
 
                 // Snap layout — contentWidth drops to collapsed
-                self.updateContainerMode(
+                controller.updateContainerMode(
                     layout: .leftExtension,
                     rightSegment: .hidden,
                     on: preferredScreen,
@@ -390,18 +393,18 @@ final class OverlayWindowController: NSObject {
                 )
 
                 // Slide window's right edge inward from expanded → collapsed
-                let collapsedFrame = self.window.frame
-                if self.frameHasMeaningfulDelta(current: expandedFrame, target: collapsedFrame) {
-                    self.window.setFrame(expandedFrame, display: false)
-                    self.frameAnimationGeneration += 1
+                let collapsedFrame = controller.window.frame
+                if controller.frameHasMeaningfulDelta(current: expandedFrame, target: collapsedFrame) {
+                    controller.window.setFrame(expandedFrame, display: false)
+                    controller.frameAnimationGeneration += 1
                     NSAnimationContext.runAnimationGroup { context in
                         context.duration = 0.15
                         context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                        self.window.animator().setFrame(collapsedFrame, display: true)
+                        controller.window.animator().setFrame(collapsedFrame, display: true)
                     }
                 }
 
-                self.rightOutroWorkItem = nil
+                controller.rightOutroWorkItem = nil
             }
         }
 
@@ -424,7 +427,7 @@ final class OverlayWindowController: NSObject {
             let hasNotchRegion = placement.metrics.hasNotch
             let isLeftExtension = layoutMode == .leftExtension
 
-            if hasNotchRegion && isLeftExtension {
+            if hasNotchRegion, isLeftExtension {
                 // Notch screen, leftExtension: reveal in place to avoid
                 // an initial leftward slide on first transcription start.
                 window.setFrame(placement.frame, display: true)
@@ -495,9 +498,11 @@ final class OverlayWindowController: NSObject {
         let widthDelta = abs(currentFrame.width - targetFrame.width)
         let widthChanged = widthDelta > Constants.frameEpsilon
 
-        if widthChanged && !reduceMotion && notchSafeMetrics.hasNotch {
+        if widthChanged, !reduceMotion, notchSafeMetrics.hasNotch {
+            let currentFrameDescription = debugFrameString(currentFrame)
+            let targetFrameDescription = debugFrameString(targetFrame)
             logger.debug(
-                "[OverlayWindow] bouncy width animation from \(self.debugFrameString(currentFrame)) to \(self.debugFrameString(targetFrame))"
+                "[OverlayWindow] bouncy width animation from \(currentFrameDescription) to \(targetFrameDescription)"
             )
 
             let overshoot = widthDelta * OverlayAnimationTiming.resizeOvershootFraction
@@ -522,13 +527,14 @@ final class OverlayWindowController: NSObject {
             }, completionHandler: { [weak self] in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    guard self.frameAnimationGeneration == generation else { return }
+                    let controller = self
+                    guard controller.frameAnimationGeneration == generation else { return }
 
                     NSAnimationContext.runAnimationGroup { context in
                         context.duration = OverlayAnimationTiming.resizeBouncePhaseTwoDuration
                         context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-                        self.window.animator().setFrame(targetFrame, display: true)
-                        self.window.animator().alphaValue = 1
+                        controller.window.animator().setFrame(targetFrame, display: true)
+                        controller.window.animator().alphaValue = 1
                     }
                 }
             })
@@ -539,8 +545,10 @@ final class OverlayWindowController: NSObject {
         let duration = widthChanged && reduceMotion
             ? OverlayAnimationTiming.resizeReducedMotionDuration
             : Constants.relocateDuration
+        let currentFrameDescription = debugFrameString(currentFrame)
+        let targetFrameDescription = debugFrameString(targetFrame)
         logger.debug(
-            "[OverlayWindow] \(profile, privacy: .public) frame animation from \(self.debugFrameString(currentFrame)) to \(self.debugFrameString(targetFrame))"
+            "[OverlayWindow] \(profile, privacy: .public) frame animation from \(currentFrameDescription) to \(targetFrameDescription)"
         )
 
         NSAnimationContext.runAnimationGroup { context in
@@ -573,8 +581,9 @@ final class OverlayWindowController: NSObject {
         let workItem = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.outcomeHideGeneration == generation else { return }
-                self.foldAndHideTowardCenter(generation: generation)
+                let controller = self
+                guard controller.outcomeHideGeneration == generation else { return }
+                controller.foldAndHideTowardCenter(generation: generation)
             }
         }
 
@@ -612,8 +621,10 @@ final class OverlayWindowController: NSObject {
             animationLabel = "slide-up-hide"
         }
 
+        let frameDescription = debugFrameString(frame)
+        let targetFrameDescription = debugFrameString(targetFrame)
         logger.debug(
-            "[OverlayWindow] \(animationLabel, privacy: .public) from \(self.debugFrameString(frame)) to \(self.debugFrameString(targetFrame))"
+            "[OverlayWindow] \(animationLabel, privacy: .public) from \(frameDescription) to \(targetFrameDescription)"
         )
 
         NSAnimationContext.runAnimationGroup({ context in
@@ -624,13 +635,14 @@ final class OverlayWindowController: NSObject {
         }, completionHandler: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.outcomeHideGeneration == generation else { return }
-                self.window.orderOut(nil)
-                self.window.alphaValue = 0
-                if self.restingFrame != .zero {
-                    self.window.setFrame(self.restingFrame, display: false)
+                let controller = self
+                guard controller.outcomeHideGeneration == generation else { return }
+                controller.window.orderOut(nil)
+                controller.window.alphaValue = 0
+                if controller.restingFrame != .zero {
+                    controller.window.setFrame(controller.restingFrame, display: false)
                 }
-                self.clearSessionAnchor()
+                controller.clearSessionAnchor()
             }
         })
     }
@@ -664,8 +676,7 @@ final class OverlayWindowController: NSObject {
         var originX = screen.frame.midX - ((leftWidth + centerGap + rightWidth) / 2)
 
         let screenID = screenIdentifier(for: screen)
-        if let notchGeometry = resolveNotchGeometry(for: screen, screenID: screenID)
-        {
+        if let notchGeometry = resolveNotchGeometry(for: screen, screenID: screenID) {
             hasNotch = true
             centerGap = notchGeometry.centerGapWidth
             originX = notchGeometry.notchMinX - Constants.notchPadding - leftWidth

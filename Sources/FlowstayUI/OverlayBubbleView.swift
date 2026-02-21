@@ -165,15 +165,15 @@ public struct OverlayBubbleView: View {
     private var accessibilityLabel: String {
         switch presentation.displayState {
         case .recording:
-            return "Transcribing"
+            "Transcribing"
         case .warming:
-            return "Warming up"
+            "Warming up"
         case .processing:
-            return "Processing transcription"
+            "Processing transcription"
         case .success:
-            return "Transcription complete"
+            "Transcription complete"
         case .error:
-            return "Transcription failed"
+            "Transcription failed"
         }
     }
 
