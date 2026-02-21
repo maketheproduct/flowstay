@@ -1,3 +1,4 @@
+import AppKit
 import FlowstayCore
 import Foundation
 import SwiftUI
@@ -11,6 +12,10 @@ class AppInitializationService: ObservableObject {
     private let appState: AppState
     private let engineCoordinator: EngineCoordinatorViewModel
     private var onboardingCallback: (() -> Void)?
+    private var toggleShortcutCallback: (() -> Void)?
+    private var shortcutFeedbackCallback: ((HotkeyFeedbackEvent) -> Void)?
+    private var hotkeyListenerReadyCallback: (() -> Void)?
+    private var prewarmTask: Task<Void, Never>?
 
     @Published var hasInitialized = false
 
@@ -51,6 +56,8 @@ class AppInitializationService: ObservableObject {
                 NotificationCenter.default.removeObserver(observer)
                 notificationObserver = nil
             }
+            prewarmTask?.cancel()
+            prewarmTask = nil
             print("[AppInitializationService] Cleaned up resources")
         }
     }
@@ -58,6 +65,16 @@ class AppInitializationService: ObservableObject {
     /// Set the onboarding callback after initialization
     func setOnboardingCallback(_ callback: @escaping () -> Void) {
         onboardingCallback = callback
+    }
+
+    func setShortcutHandlers(
+        onToggleRequested: @escaping () -> Void,
+        onFeedback: @escaping (HotkeyFeedbackEvent) -> Void,
+        onListenerReady: (() -> Void)? = nil
+    ) {
+        toggleShortcutCallback = onToggleRequested
+        shortcutFeedbackCallback = onFeedback
+        hotkeyListenerReadyCallback = onListenerReady
     }
 
     /// Check if critical requirements are met (permissions and model)
@@ -93,6 +110,16 @@ class AppInitializationService: ObservableObject {
         print("  - Mic: \(permissionManager.microphoneStatus)")
         print("  - Accessibility: \(permissionManager.accessibilityStatus)")
         print("  - Critical permissions granted: \(permissionManager.criticalPermissionsGranted)")
+
+        // Make the hotkey listener available as early as possible for returning users.
+        let onboardingCompleted = UserDefaults.standard.hasCompletedOnboarding
+        let launchPlan = InitializationOrderingPolicy.makePlan(
+            permissionsGranted: permissionManager.criticalPermissionsGranted,
+            onboardingCompleted: onboardingCompleted
+        )
+        if launchPlan.steps.contains(.initializeShortcuts) {
+            initializeGlobalShortcutsIfNeeded()
+        }
 
         // Check if model is downloaded
         let modelDownloaded = engineCoordinator.isModelDownloaded()
@@ -143,30 +170,9 @@ class AppInitializationService: ObservableObject {
             print("[AppInitializationService] Auto-paste enabled by default")
         }
 
-        // Pre-load models eagerly for instant transcription startup
-        // This loads models into memory after onboarding, avoiding lazy initialization delays
-        // NOTE: Safe to run synchronously here because initializeApp() is now called from
-        // applicationDidFinishLaunching, which fires AFTER SwiftUI scene graph is constructed
-        if permissionManager.criticalPermissionsGranted, UserDefaults.standard.hasCompletedOnboarding {
-            print("[AppInitializationService] Pre-loading speech recognition models...")
-            await engineCoordinator.preInitializeAllModels()
-            print("[AppInitializationService] ✅ Models pre-loaded, ready for instant transcription")
-        }
-
-        // Initialize global shortcuts if user has already completed onboarding
-        // This ensures hotkeys work immediately on app launch (not just after first onboarding)
-        // This is the ONLY initialization point to avoid race conditions
-        if permissionManager.criticalPermissionsGranted, UserDefaults.standard.hasCompletedOnboarding {
-            print("[AppInitializationService] Initializing global shortcuts for returning user...")
-            if !GlobalShortcutsManager.isInitialized {
-                GlobalShortcutsManager.initialize(
-                    engineCoordinator: engineCoordinator,
-                    permissionManager: permissionManager
-                )
-                print("[AppInitializationService] ✅ Global shortcuts initialized")
-            } else {
-                print("[AppInitializationService] ⏭️ Global shortcuts already initialized, skipping")
-            }
+        // Prewarm asynchronously so initialization does not block hotkey readiness.
+        if launchPlan.steps.contains(.startModelPrewarmInBackground) {
+            startModelPrewarmIfNeeded()
         }
 
         // Initialize auto-update system
@@ -183,21 +189,58 @@ class AppInitializationService: ObservableObject {
     func finalizeInitialization() async {
         print("[AppInitializationService] Finalizing initialization post-onboarding...")
 
-        // Initialize global shortcuts now that onboarding is complete (if not already initialized)
-        if permissionManager.criticalPermissionsGranted, !GlobalShortcutsManager.isInitialized {
-            print("[AppInitializationService] Initializing global shortcuts...")
-            GlobalShortcutsManager.initialize(
-                engineCoordinator: engineCoordinator,
-                permissionManager: permissionManager
-            )
-            print("[AppInitializationService] ✅ Global shortcuts initialized")
-        } else if GlobalShortcutsManager.isInitialized {
-            print("[AppInitializationService] Global shortcuts already initialized, skipping")
-        } else {
-            print("[AppInitializationService] Skipping global shortcuts - permissions not granted")
-        }
+        initializeGlobalShortcutsIfNeeded()
+        startModelPrewarmIfNeeded()
 
         print("[AppInitializationService] Finalization complete")
+    }
+
+    private func initializeGlobalShortcutsIfNeeded() {
+        guard permissionManager.criticalPermissionsGranted, UserDefaults.standard.hasCompletedOnboarding else {
+            print("[AppInitializationService] Skipping global shortcuts - requirements not met")
+            return
+        }
+
+        guard let onToggleRequested = toggleShortcutCallback,
+              let onFeedback = shortcutFeedbackCallback
+        else {
+            print("[AppInitializationService] Hotkey callbacks not configured yet, skipping shortcut setup")
+            return
+        }
+
+        if !GlobalShortcutsManager.isInitialized {
+            print("[AppInitializationService] Initializing global shortcuts...")
+            GlobalShortcutsManager.initialize(
+                onToggleRequested: onToggleRequested,
+                onFeedback: onFeedback
+            )
+            hotkeyListenerReadyCallback?()
+            print("[AppInitializationService] ✅ Global shortcuts initialized")
+        } else {
+            print("[AppInitializationService] Global shortcuts already initialized, skipping")
+        }
+    }
+
+    private func startModelPrewarmIfNeeded() {
+        guard permissionManager.criticalPermissionsGranted, UserDefaults.standard.hasCompletedOnboarding else {
+            print("[AppInitializationService] Skipping model prewarm - requirements not met")
+            return
+        }
+
+        guard prewarmTask == nil else {
+            print("[AppInitializationService] Model prewarm already in progress")
+            return
+        }
+
+        print("[AppInitializationService] Starting model prewarm task in background...")
+        prewarmTask = Task { [weak self] in
+            guard let self else { return }
+            await self.engineCoordinator.preInitializeAllModels()
+            print("[AppInitializationService] ✅ Models prewarm task finished")
+            await MainActor.run {
+                self.prewarmTask = nil
+            }
+        }
     }
 
     private func showOnboardingWindow() async {

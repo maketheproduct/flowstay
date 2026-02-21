@@ -528,21 +528,22 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             transcription = trimmedText
 
             print("[FluidAudioSpeechRecognition] ✅ Transcription complete (\(trimmedText.count) chars, \(metrics.chunkCount) chunks, \(String(format: "%.1f", metrics.totalDuration))s)")
-
-            // Call completion callback with duration (thread-safe check)
-            let shouldCallCompletion = completionLock.withLock {
-                let should = !hasCalledCompletion
-                if should {
-                    hasCalledCompletion = true
-                }
-                return should
-            }
-
-            if shouldCallCompletion {
-                onTranscriptionComplete?(trimmedText, metrics.totalDuration)
-            }
         } else {
             print("[FluidAudioSpeechRecognition] ⚠️ Transcription returned empty text")
+        }
+
+        // Call completion callback with duration (thread-safe check) for both non-empty and empty
+        // transcriptions so upper layers can resolve no-speech/error UI deterministically.
+        let shouldCallCompletion = completionLock.withLock {
+            let should = !hasCalledCompletion
+            if should {
+                hasCalledCompletion = true
+            }
+            return should
+        }
+
+        if shouldCallCompletion {
+            onTranscriptionComplete?(trimmedText, metrics.totalDuration)
         }
     }
 

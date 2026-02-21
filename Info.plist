@@ -21,10 +21,10 @@
     <string>$(PRODUCT_NAME)</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.4</string>
-    <key>CFBundleVersion</key>
-    <string>20</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.5.0</string>
+	<key>CFBundleVersion</key>
+	<string>22</string>
 
     <!-- Privacy Usage Descriptions -->
     <key>NSMicrophoneUsageDescription</key>

@@ -234,7 +234,7 @@ struct GeneralSettingsTab: View {
                             }
                         ))
                     }
-                    Text("Shows a glass overlay with mic and transcription status")
+                    Text("Shows a Dynamic-Island-style overlay with transcription state and input activity")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 

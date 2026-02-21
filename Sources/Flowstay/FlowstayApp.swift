@@ -1,10 +1,8 @@
 import AppKit
-import AVFoundation
 import Combine
 import FlowstayCore
 import FlowstayPermissions
 import FlowstayUI
-import KeyboardShortcuts
 import os
 import SwiftUI
 
@@ -40,11 +38,27 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private var personasEngine: PersonasEngine!
     private var overlayWindowController: OverlayWindowController?
     private var recordingTargetApp: DetectedApp?
+    private var previousRecordingState = false
+    private var isAwaitingTranscriptionCompletion = false
+    private var overlayProcessingTimeoutTask: Task<Void, Never>?
+    private var isHotkeyStartPending = false
+    private var queuedStartRequest = false
+    private var hotkeyWarmupTask: Task<Void, Never>?
+    private var hotkeyStartupFeedbackTask: Task<Void, Never>?
+    private var overlayOutcomeVisibleUntil: Date?
+    private var overlayOutcomeState: OverlayOutcomeState?
+    private var lastResolvedOverlayPhase: OverlayVisibilityPhase = .hidden
+    private let launchTimestamp = Date()
+    private var firstHotkeyKeydownAt: Date?
+    private var firstHotkeyFeedbackAt: Date?
+    private var firstRecordingStartAt: Date?
+    private var hotkeyListenerReadyAt: Date?
 
     // MARK: - NSApplicationDelegate
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("[AppDelegate] applicationDidFinishLaunching - initializing app")
+        logStartupMetric("app launch", at: launchTimestamp)
 
         // Register custom fonts
         FontLoader.registerFonts()
@@ -56,6 +70,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         setupStatusItem()
         setupRecordingObserver()
         setupOverlayObserver()
+        setupModelReadinessObserver()
         MenuBarHelper.delegate = self
 
         // Register for URL events (OAuth callbacks)
@@ -69,6 +84,18 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
         // Set up transcription completion callback
         setupTranscriptionCallback()
+
+        initService.setShortcutHandlers(
+            onToggleRequested: { [weak self] in
+                self?.handleHotkeyToggleRequested()
+            },
+            onFeedback: { [weak self] event in
+                self?.handleHotkeyFeedback(event)
+            },
+            onListenerReady: { [weak self] in
+                self?.recordHotkeyListenerReady()
+            }
+        )
 
         logger.info("[AppDelegate] Starting app initialization")
         Task { @MainActor in
@@ -91,6 +118,12 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
     func applicationWillTerminate(_ notification: Notification) {
         logger.info("[AppDelegate] applicationWillTerminate - cleaning up")
+        overlayProcessingTimeoutTask?.cancel()
+        overlayProcessingTimeoutTask = nil
+        hotkeyWarmupTask?.cancel()
+        hotkeyWarmupTask = nil
+        hotkeyStartupFeedbackTask?.cancel()
+        hotkeyStartupFeedbackTask = nil
         if let statusItem {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
@@ -133,12 +166,31 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
                 self.logger.info("[AppDelegate] Transcription complete (\(finalText.count) chars, duration: \(String(format: "%.1f", duration))s)")
 
+                let completionOutcome = FinalTranscriptionPolicy.classify(finalText)
+                let finalTranscription: String
+                switch completionOutcome {
+                case .noSpeech:
+                    self.logger.warning("[AppDelegate] No transcription detected (trimmed empty). Showing overlay error state")
+                    self.recordingTargetApp = nil
+                    if self.consumeAwaitingOverlayCompletion() {
+                        self.stageOverlayOutcome(success: false)
+                        self.applyOverlayVisibility(reason: "transcription-empty-no-speech")
+                    } else {
+                        self.logger.debug("[AppDelegate] Empty transcription callback arrived with no awaiting overlay completion state")
+                    }
+                    return
+
+                case let .transcript(trimmed):
+                    finalTranscription = trimmed
+                }
+
                 // Use app captured at recording start to keep routing stable even if focus changed.
                 let detectedApp = self.recordingTargetApp ?? AppDetectionService.shared.currentApp
 
                 // Process with personas if enabled
-                var processedText = finalText
+                var processedText = finalTranscription
                 var usedPersonaId: String? = nil
+                var overlayOutcomeSuccess = true
 
                 if appState.personasEnabled {
                     // Check if we have an app-specific rule
@@ -177,11 +229,13 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                             )
                         }
 
-                        processedText = await personasEngine.processTranscription(
-                            finalText,
+                        let result = await personasEngine.processTranscriptionWithResult(
+                            finalTranscription,
                             instruction: persona.instruction,
                             appState: appState
                         )
+                        processedText = result.text
+                        overlayOutcomeSuccess = result.isSuccess
 
                         // Cancel the timer (processing completed)
                         processingTimer.cancel()
@@ -200,7 +254,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 appState.recentTranscripts.insert(
                     TranscriptItem(
                         text: processedText,
-                        originalText: usedPersonaId != nil ? finalText : nil,
+                        originalText: usedPersonaId != nil ? finalTranscription : nil,
                         personaId: usedPersonaId,
                         timestamp: Date(),
                         duration: duration
@@ -211,7 +265,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 // Save to persistent history (markdown files)
                 let record = TranscriptionRecord(
                     duration: duration,
-                    rawText: finalText,
+                    rawText: finalTranscription,
                     processedText: processedText,
                     personaId: usedPersonaId,
                     personaName: usedPersonaId != nil ? appState.allPersonas.first(where: { $0.id == usedPersonaId })?.name : nil,
@@ -231,6 +285,11 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 // Play completion sound AFTER paste (or if no paste, after processing)
                 if appState.soundFeedbackEnabled {
                     SoundManager.shared.playTranscriptionComplete()
+                }
+
+                if self.consumeAwaitingOverlayCompletion() {
+                    self.stageOverlayOutcome(success: overlayOutcomeSuccess)
+                    self.applyOverlayVisibility(reason: "transcription-complete")
                 }
             }
         }
@@ -283,39 +342,408 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         engineCoordinator.$isRecording
             .receive(on: DispatchQueue.main)
             .sink { [weak self] isRecording in
+                guard let self else { return }
+
                 if isRecording {
+                    if self.firstRecordingStartAt == nil {
+                        let now = Date()
+                        self.firstRecordingStartAt = now
+                        self.logStartupMetric("first recording start", at: now)
+                    }
                     AppDetectionService.shared.detectFrontmostApp()
-                    self?.recordingTargetApp = AppDetectionService.shared.currentApp
-                    if let app = self?.recordingTargetApp {
-                        self?.logger.info("[AppDelegate] Captured recording target app: \(app.name) (\(app.bundleId))")
+                    self.recordingTargetApp = AppDetectionService.shared.currentApp
+                    if let app = self.recordingTargetApp {
+                        self.logger.info("[AppDelegate] Captured recording target app: \(app.name) (\(app.bundleId))")
                     } else {
-                        self?.logger.info("[AppDelegate] Recording started with no detected target app")
+                        self.logger.info("[AppDelegate] Recording started with no detected target app")
                     }
                 }
-                self?.updateStatusIcon(isRecording: isRecording)
-                self?.applyOverlayVisibility()
+
+                self.updateStatusIcon(isRecording: isRecording)
+                self.handleOverlayRecordingTransition(isRecording: isRecording)
+                self.previousRecordingState = isRecording
+            }
+            .store(in: &cancellables)
+    }
+
+    private func setupModelReadinessObserver() {
+        engineCoordinator.$isModelsReady
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isReady in
+                guard let self else { return }
+                guard isReady else { return }
+                guard self.queuedStartRequest else { return }
+                let decision = HotkeyStartPolicy.onModelsReady(
+                    queuedStartRequest: self.queuedStartRequest,
+                    modelsReady: isReady
+                )
+                self.applyHotkeyDecision(decision)
             }
             .store(in: &cancellables)
     }
 
     private func setupOverlayObserver() {
-        applyOverlayVisibility()
+        applyOverlayVisibility(reason: "overlay-observer-setup")
 
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                self?.applyOverlayVisibility()
+                self?.applyOverlayVisibility(reason: "user-defaults-changed")
             }
             .store(in: &cancellables)
     }
 
-    private func applyOverlayVisibility() {
-        let showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
-        if showOverlay, engineCoordinator.isRecording {
-            overlayWindowController?.show()
-        } else {
-            overlayWindowController?.hide()
+    private func applyOverlayVisibility(reason: String) {
+        let now = Date()
+        let nextPhase = OverlayVisibilityPolicy.resolve(
+            OverlayVisibilityInput(
+                overlayEnabled: overlayIsEnabled,
+                isRecording: engineCoordinator.isRecording,
+                isHotkeyStartPending: isHotkeyStartPending,
+                isQueuedWarmup: queuedStartRequest,
+                isAwaitingCompletion: isAwaitingTranscriptionCompletion,
+                outcomeState: overlayOutcomeState,
+                outcomeVisibleUntil: overlayOutcomeVisibleUntil
+            ),
+            now: now
+        )
+        let previousPhase = lastResolvedOverlayPhase
+
+        if previousPhase != nextPhase {
+            logger.debug(
+                "[OverlayPhase] \(previousPhase.rawValue, privacy: .public) -> \(nextPhase.rawValue, privacy: .public) (\(reason, privacy: .public))"
+            )
+            lastResolvedOverlayPhase = nextPhase
         }
+
+        switch nextPhase {
+        case .hidden:
+            if !overlayIsEnabled {
+                cancelOverlayProcessingTimeout()
+                clearOverlayOutcome()
+            } else if let overlayOutcomeVisibleUntil, overlayOutcomeVisibleUntil <= now {
+                clearOverlayOutcome()
+            }
+            overlayWindowController?.forceHide()
+
+        case .recording:
+            clearOverlayOutcome()
+            overlayWindowController?.showRecording(on: currentOverlayScreen())
+
+        case .warming:
+            clearOverlayOutcome()
+            overlayWindowController?.showWarmup(on: currentOverlayScreen())
+
+        case .processing:
+            clearOverlayOutcome()
+            overlayWindowController?.showProcessing(on: currentOverlayScreen())
+            if overlayProcessingTimeoutTask == nil {
+                startOverlayProcessingTimeout()
+            }
+
+        case .outcomeSuccess, .outcomeError:
+            if nextPhase != previousPhase {
+                overlayWindowController?.showOutcome(
+                    success: nextPhase == .outcomeSuccess,
+                    on: currentOverlayScreen()
+                )
+            }
+        }
+    }
+
+    private func clearOverlayOutcome() {
+        overlayOutcomeVisibleUntil = nil
+        overlayOutcomeState = nil
+    }
+
+    private func stageOverlayOutcome(success: Bool) {
+        overlayOutcomeVisibleUntil = Date().addingTimeInterval(1.1)
+        overlayOutcomeState = success ? .success : .error
+    }
+
+    private var overlayIsEnabled: Bool {
+        UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
+    }
+
+    private func currentOverlayScreen() -> NSScreen? {
+        statusItem?.button?.window?.screen ?? NSScreen.main
+    }
+
+    private func handleOverlayRecordingTransition(isRecording: Bool) {
+        let wasRecording = previousRecordingState
+
+        if isRecording {
+            clearOverlayOutcome()
+            setHotkeyStartPending(false)
+            setQueuedStartRequest(false)
+            isAwaitingTranscriptionCompletion = false
+            cancelOverlayProcessingTimeout()
+            applyOverlayVisibility(reason: "recording-started")
+            return
+        }
+
+        guard wasRecording else { return }
+
+        isAwaitingTranscriptionCompletion = true
+        clearOverlayOutcome()
+        startOverlayProcessingTimeout()
+        applyOverlayVisibility(reason: "recording-stopped-awaiting-transcription")
+    }
+
+    private func startOverlayProcessingTimeout() {
+        cancelOverlayProcessingTimeout()
+        overlayProcessingTimeoutTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(12))
+            } catch {
+                return
+            }
+
+            await MainActor.run {
+                guard let self else { return }
+                guard self.isAwaitingTranscriptionCompletion, !self.engineCoordinator.isRecording else { return }
+
+                self.logger.warning("[AppDelegate] Overlay processing timeout reached; showing error state")
+                if self.consumeAwaitingOverlayCompletion() {
+                    self.stageOverlayOutcome(success: false)
+                }
+                self.overlayProcessingTimeoutTask = nil
+                self.applyOverlayVisibility(reason: "processing-timeout")
+            }
+        }
+    }
+
+    private func cancelOverlayProcessingTimeout() {
+        overlayProcessingTimeoutTask?.cancel()
+        overlayProcessingTimeoutTask = nil
+    }
+
+    private func consumeAwaitingOverlayCompletion() -> Bool {
+        let shouldShowOutcome = isAwaitingTranscriptionCompletion
+        isAwaitingTranscriptionCompletion = false
+        cancelOverlayProcessingTimeout()
+        return shouldShowOutcome
+    }
+
+    private func handleHotkeyToggleRequested() {
+        let decision = HotkeyStartPolicy.onToggle(
+            HotkeyStartInput(
+                isRecording: engineCoordinator.isRecording,
+                isTransitioning: engineCoordinator.isTransitioningRecordingState,
+                isAwaitingCompletion: isAwaitingTranscriptionCompletion,
+                permissionsGranted: permissionManager.criticalPermissionsGranted,
+                modelsDownloaded: engineCoordinator.isModelDownloaded(),
+                modelsReady: engineCoordinator.isModelsReady,
+                queuedStartRequest: queuedStartRequest
+            )
+        )
+        applyHotkeyDecision(decision)
+    }
+
+    private func applyHotkeyDecision(_ decision: HotkeyStartDecision) {
+        let shouldMaintainPendingWarmup = isHotkeyStartPending
+            || decision.actions.contains(.queueWarmup)
+            || decision.actions.contains(.startRecording)
+            || decision.actions.contains(.blocked(.queued))
+
+        if shouldMaintainPendingWarmup {
+            setHotkeyStartPending(true)
+        }
+
+        setQueuedStartRequest(decision.queuedStartRequest)
+
+        for action in decision.actions {
+            switch action {
+            case .startRecording:
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await self.engineCoordinator.startRecording()
+                    } catch {
+                        self.setHotkeyStartPending(false)
+                        self.logger.error("[AppDelegate] Failed to start recording from hotkey: \(error.localizedDescription)")
+                        self.handleHotkeyFeedback(.error)
+                    }
+                }
+
+            case .stopRecording:
+                setHotkeyStartPending(false)
+                Task { @MainActor [weak self] in
+                    await self?.engineCoordinator.stopRecording()
+                }
+
+            case .queueWarmup:
+                setHotkeyStartPending(true)
+                startHotkeyWarmupTimeout()
+                applyOverlayVisibility(reason: "hotkey-queue-warmup")
+
+            case .cancelQueuedWarmup:
+                setHotkeyStartPending(false)
+                setQueuedStartRequest(false)
+                handleHotkeyFeedback(.blockedTransition)
+
+            case .showModelGuidance:
+                setHotkeyStartPending(false)
+                openOnboardingWindow()
+
+            case let .blocked(event):
+                handleHotkeyFeedback(event)
+            }
+        }
+    }
+
+    private func startHotkeyWarmupTimeout() {
+        hotkeyWarmupTask?.cancel()
+        hotkeyWarmupTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(for: .seconds(12))
+            } catch {
+                return
+            }
+
+            let timeoutDecision = HotkeyStartPolicy.onWarmupTimeout(queuedStartRequest: self.queuedStartRequest)
+            self.applyHotkeyDecision(timeoutDecision)
+        }
+    }
+
+    private func setQueuedStartRequest(_ queued: Bool) {
+        guard queuedStartRequest != queued else { return }
+        queuedStartRequest = queued
+
+        if !queued {
+            hotkeyWarmupTask?.cancel()
+            hotkeyWarmupTask = nil
+        }
+
+        applyOverlayVisibility(reason: "queued-start-updated")
+    }
+
+    private func setHotkeyStartPending(_ pending: Bool) {
+        guard isHotkeyStartPending != pending else { return }
+        isHotkeyStartPending = pending
+        applyOverlayVisibility(reason: "hotkey-pending-updated")
+    }
+
+    private func handleHotkeyFeedback(_ event: HotkeyFeedbackEvent) {
+        let now = Date()
+        if event == .accepted {
+            if firstHotkeyKeydownAt == nil {
+                firstHotkeyKeydownAt = now
+                logStartupMetric("first hotkey keydown", at: now)
+            }
+            if HotkeyStartPolicy.shouldShowStartPendingOnAccepted(
+                isRecording: engineCoordinator.isRecording,
+                isAwaitingCompletion: isAwaitingTranscriptionCompletion,
+                permissionsGranted: permissionManager.criticalPermissionsGranted,
+                modelsDownloaded: engineCoordinator.isModelDownloaded()
+            ) {
+                setHotkeyStartPending(true)
+            }
+            return
+        }
+
+        switch event {
+        case .queued:
+            setHotkeyStartPending(true)
+
+        case .blockedTransition:
+            if !engineCoordinator.isTransitioningRecordingState {
+                setHotkeyStartPending(false)
+            }
+
+        case .blockedPermissions, .notReady, .error:
+            setHotkeyStartPending(false)
+
+        case .accepted:
+            break
+        }
+
+        if firstHotkeyFeedbackAt == nil {
+            firstHotkeyFeedbackAt = now
+            logStartupMetric("first hotkey feedback", at: now)
+        }
+
+        if appState.soundFeedbackEnabled {
+            switch event {
+            case .queued:
+                SoundManager.shared.playQueuedFeedback()
+            case .blockedTransition, .blockedPermissions, .notReady, .error:
+                SoundManager.shared.playBlockedFeedback()
+            case .accepted:
+                break
+            }
+        }
+
+        if event == .blockedPermissions || event == .notReady {
+            openOnboardingWindow()
+        }
+
+        showHotkeyVisualFeedback(event)
+    }
+
+    private func showHotkeyVisualFeedback(_ event: HotkeyFeedbackEvent) {
+        switch event {
+        case .queued:
+            if overlayIsEnabled {
+                applyOverlayVisibility(reason: "hotkey-feedback-queued")
+            } else {
+                flashStatusItemAcknowledgement()
+            }
+
+        case .blockedTransition, .blockedPermissions, .notReady, .error:
+            if event == .blockedTransition, queuedStartRequest {
+                flashStatusItemAcknowledgement()
+                return
+            }
+            if overlayIsEnabled,
+               !engineCoordinator.isRecording,
+               !isAwaitingTranscriptionCompletion
+            {
+                stageOverlayOutcome(success: false)
+                applyOverlayVisibility(reason: "hotkey-feedback-blocked")
+            } else {
+                flashStatusItemAcknowledgement()
+            }
+
+        case .accepted:
+            break
+        }
+    }
+
+    private func flashStatusItemAcknowledgement() {
+        hotkeyStartupFeedbackTask?.cancel()
+        guard let button = statusItem?.button else { return }
+
+        let feedbackIcon = NSImage(
+            systemSymbolName: MenuBarIcon.systemIconName(isRecording: true),
+            accessibilityDescription: "Flowstay feedback"
+        )
+        button.image = feedbackIcon
+
+        hotkeyStartupFeedbackTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await Task.sleep(for: .milliseconds(140))
+            } catch {
+                self.hotkeyStartupFeedbackTask = nil
+                return
+            }
+            self.updateStatusIcon(isRecording: self.engineCoordinator.isRecording)
+            self.hotkeyStartupFeedbackTask = nil
+        }
+    }
+
+    private func recordHotkeyListenerReady() {
+        guard hotkeyListenerReadyAt == nil else { return }
+        let now = Date()
+        hotkeyListenerReadyAt = now
+        logStartupMetric("hotkey listener ready", at: now)
+    }
+
+    private func logStartupMetric(_ label: String, at timestamp: Date) {
+        let delta = timestamp.timeIntervalSince(launchTimestamp)
+        logger.info("[StartupTelemetry] \(label, privacy: .public) +\(delta, format: .fixed(precision: 3))s")
     }
 
     private func updateStatusIcon(isRecording: Bool) {

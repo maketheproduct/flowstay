@@ -178,14 +178,13 @@ public class EngineCoordinatorViewModel: ObservableObject {
         }
 
         do {
-            // Play immediate feedback so the first hotkey press feels responsive,
-            // even when audio hardware takes time to spin up.
-            if appState?.soundFeedbackEnabled == true {
-                SoundManager.shared.playStartRecording()
-            }
-
             try await fluidAudioSpeechRecognition.startRecording()
             isRecording = fluidAudioSpeechRecognition.isRecording
+
+            // Play start cue only after recording is actually active.
+            if isRecording, appState?.soundFeedbackEnabled == true {
+                SoundManager.shared.playStartRecording()
+            }
         } catch {
             engineError = "Failed to start FluidAudio recognition: \(error.localizedDescription)"
             isRecording = false

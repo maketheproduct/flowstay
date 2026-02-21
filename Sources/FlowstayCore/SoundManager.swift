@@ -50,4 +50,14 @@ public class SoundManager: NSObject, NSSoundDelegate {
         // "Basso" or standard beep
         playSound("Basso")
     }
+
+    /// Play sound indicating a queued startup action.
+    public func playQueuedFeedback() {
+        playSound("Pop")
+    }
+
+    /// Play sound indicating a blocked startup action.
+    public func playBlockedFeedback() {
+        playSound("Basso")
+    }
 }
