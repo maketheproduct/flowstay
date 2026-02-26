@@ -12,7 +12,7 @@ class AppInitializationService: ObservableObject {
     private let appState: AppState
     private let engineCoordinator: EngineCoordinatorViewModel
     private var onboardingCallback: (() -> Void)?
-    private var toggleShortcutCallback: (() -> Void)?
+    private var hotkeyEventCallback: ((HotkeyInputEvent) -> Void)?
     private var shortcutFeedbackCallback: ((HotkeyFeedbackEvent) -> Void)?
     private var hotkeyListenerReadyCallback: (() -> Void)?
     private var prewarmTask: Task<Void, Never>?
@@ -68,11 +68,11 @@ class AppInitializationService: ObservableObject {
     }
 
     func setShortcutHandlers(
-        onToggleRequested: @escaping () -> Void,
+        onHotkeyEvent: @escaping (HotkeyInputEvent) -> Void,
         onFeedback: @escaping (HotkeyFeedbackEvent) -> Void,
         onListenerReady: (() -> Void)? = nil
     ) {
-        toggleShortcutCallback = onToggleRequested
+        hotkeyEventCallback = onHotkeyEvent
         shortcutFeedbackCallback = onFeedback
         hotkeyListenerReadyCallback = onListenerReady
     }
@@ -201,7 +201,7 @@ class AppInitializationService: ObservableObject {
             return
         }
 
-        guard let onToggleRequested = toggleShortcutCallback,
+        guard let onHotkeyEvent = hotkeyEventCallback,
               let onFeedback = shortcutFeedbackCallback
         else {
             print("[AppInitializationService] Hotkey callbacks not configured yet, skipping shortcut setup")
@@ -211,7 +211,7 @@ class AppInitializationService: ObservableObject {
         if !GlobalShortcutsManager.isInitialized {
             print("[AppInitializationService] Initializing global shortcuts...")
             GlobalShortcutsManager.initialize(
-                onToggleRequested: onToggleRequested,
+                onHotkeyEvent: onHotkeyEvent,
                 onFeedback: onFeedback
             )
             hotkeyListenerReadyCallback?()

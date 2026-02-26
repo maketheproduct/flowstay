@@ -217,7 +217,17 @@ struct GeneralSettingsTab: View {
                             .background(Color.gray.opacity(0.15))
                             .cornerRadius(6)
                     }
-                    Text("Press Option+Space to start or stop transcription")
+                    Picker("Hotkey behavior", selection: $appState.hotkeyPressMode) {
+                        ForEach(HotkeyPressMode.allCases, id: \.rawValue) { mode in
+                            Text(mode.displayName).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text(
+                        appState.hotkeyPressMode == .holdToTalk
+                            ? "Hold Option+Space while speaking, then release to stop."
+                            : "Press Option+Space to start or stop transcription."
+                    )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

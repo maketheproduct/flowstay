@@ -10,6 +10,11 @@ public enum HotkeyFeedbackEvent: Equatable, Sendable {
     case error
 }
 
+public enum HotkeyInputEvent: Equatable, Sendable {
+    case keyDown
+    case keyUp
+}
+
 public struct HotkeyStartInput: Equatable, Sendable {
     public var isRecording: Bool
     public var isTransitioning: Bool

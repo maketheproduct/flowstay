@@ -228,6 +228,14 @@ final class AppStateTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(appState.historyRetentionDays, 0)
     }
 
+    func testHotkeyPressModeCanBeSet() {
+        appState.hotkeyPressMode = .holdToTalk
+        XCTAssertEqual(appState.hotkeyPressMode, .holdToTalk)
+
+        appState.hotkeyPressMode = .toggle
+        XCTAssertEqual(appState.hotkeyPressMode, .toggle)
+    }
+
     func testClaudeCodeModelSelectionCanBeSet() {
         appState.selectedClaudeCodeModelId = "haiku"
         XCTAssertEqual(appState.selectedClaudeCodeModelId, "haiku")

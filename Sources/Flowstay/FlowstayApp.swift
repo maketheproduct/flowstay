@@ -43,6 +43,9 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private var overlayProcessingTimeoutTask: Task<Void, Never>?
     private var isHotkeyStartPending = false
     private var queuedStartRequest = false
+    private var isHoldToTalkHotkeyPressed = false
+    private var holdToTalkSessionActive = false
+    private var stopHoldToTalkAfterTransition = false
     private var hotkeyWarmupTask: Task<Void, Never>?
     private var hotkeyStartupFeedbackTask: Task<Void, Never>?
     private var overlayOutcomeVisibleUntil: Date?
@@ -92,8 +95,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         setupTranscriptionCallback()
 
         initService.setShortcutHandlers(
-            onToggleRequested: { [weak self] in
-                self?.handleHotkeyToggleRequested()
+            onHotkeyEvent: { [weak self] event in
+                self?.handleHotkeyEvent(event)
             },
             onFeedback: { [weak self] event in
                 self?.handleHotkeyFeedback(event)
@@ -416,6 +419,17 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                     } else {
                         logger.info("[AppDelegate] Recording started with no detected target app")
                     }
+
+                    if stopHoldToTalkAfterTransition, !isHoldToTalkHotkeyPressed {
+                        stopHoldToTalkAfterTransition = false
+                        holdToTalkSessionActive = false
+                        applyHotkeyDecision(
+                            HotkeyStartDecision(actions: [.stopRecording], queuedStartRequest: false)
+                        )
+                    }
+                } else if !isHoldToTalkHotkeyPressed {
+                    holdToTalkSessionActive = false
+                    stopHoldToTalkAfterTransition = false
                 }
 
                 updateStatusIcon(isRecording: isRecording)
@@ -599,6 +613,76 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         applyHotkeyDecision(decision)
     }
 
+    private func handleHotkeyEvent(_ event: HotkeyInputEvent) {
+        switch appState.hotkeyPressMode {
+        case .toggle:
+            resetHoldToTalkState()
+            guard event == .keyDown else { return }
+            handleHotkeyToggleRequested()
+
+        case .holdToTalk:
+            handleHoldToTalkEvent(event)
+        }
+    }
+
+    private func handleHoldToTalkEvent(_ event: HotkeyInputEvent) {
+        switch event {
+        case .keyDown:
+            guard !isHoldToTalkHotkeyPressed else { return }
+            isHoldToTalkHotkeyPressed = true
+            stopHoldToTalkAfterTransition = false
+
+            // Hold-to-talk only takes over recordings started by this hold interaction.
+            guard !engineCoordinator.isRecording else {
+                holdToTalkSessionActive = false
+                return
+            }
+
+            holdToTalkSessionActive = true
+            handleHotkeyToggleRequested()
+
+        case .keyUp:
+            guard isHoldToTalkHotkeyPressed else { return }
+            isHoldToTalkHotkeyPressed = false
+            stopHoldToTalkSessionIfNeeded()
+        }
+    }
+
+    private func stopHoldToTalkSessionIfNeeded() {
+        guard holdToTalkSessionActive else { return }
+
+        if queuedStartRequest {
+            holdToTalkSessionActive = false
+            applyHotkeyDecision(
+                HotkeyStartDecision(actions: [.cancelQueuedWarmup], queuedStartRequest: false)
+            )
+            return
+        }
+
+        if engineCoordinator.isTransitioningRecordingState {
+            holdToTalkSessionActive = false
+            stopHoldToTalkAfterTransition = true
+            return
+        }
+
+        guard engineCoordinator.isRecording else {
+            resetHoldToTalkState()
+            return
+        }
+
+        holdToTalkSessionActive = false
+        stopHoldToTalkAfterTransition = false
+        applyHotkeyDecision(
+            HotkeyStartDecision(actions: [.stopRecording], queuedStartRequest: false)
+        )
+    }
+
+    private func resetHoldToTalkState() {
+        isHoldToTalkHotkeyPressed = false
+        holdToTalkSessionActive = false
+        stopHoldToTalkAfterTransition = false
+    }
+
     private func applyHotkeyDecision(_ decision: HotkeyStartDecision) {
         let shouldMaintainPendingWarmup = isHotkeyStartPending
             || decision.actions.contains(.queueWarmup)
@@ -619,6 +703,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                     do {
                         try await engineCoordinator.startRecording()
                     } catch {
+                        stopHoldToTalkAfterTransition = false
+                        holdToTalkSessionActive = false
                         setHotkeyStartPending(false)
                         logger.error("[AppDelegate] Failed to start recording from hotkey: \(error.localizedDescription)")
                         handleHotkeyFeedback(.error)
@@ -861,6 +947,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     }
 
     func toggleTranscriptionFromMenuBar() {
+        resetHoldToTalkState()
         if HotkeyStartPolicy.shouldShowStartPendingOnAccepted(
             isRecording: engineCoordinator.isRecording,
             isAwaitingCompletion: isAwaitingTranscriptionCompletion,

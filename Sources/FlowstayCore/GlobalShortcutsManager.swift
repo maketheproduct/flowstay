@@ -19,7 +19,7 @@ public class GlobalShortcutsManager {
     /// Debounce interval to prevent rapid double-triggers.
     private static let debounceInterval: TimeInterval = 0.3
 
-    private static var toggleRequestedHandler: (() -> Void)?
+    private static var hotkeyEventHandler: ((HotkeyInputEvent) -> Void)?
     private static var feedbackHandler: ((HotkeyFeedbackEvent) -> Void)?
 
     /// Check if global shortcuts have been initialized.
@@ -29,7 +29,7 @@ public class GlobalShortcutsManager {
 
     /// Initialize global shortcuts and dispatch callbacks.
     public static func initialize(
-        onToggleRequested: @escaping () -> Void,
+        onHotkeyEvent: @escaping (HotkeyInputEvent) -> Void,
         onFeedback: @escaping (HotkeyFeedbackEvent) -> Void
     ) {
         guard !_isInitialized else {
@@ -41,7 +41,7 @@ public class GlobalShortcutsManager {
         print("[GlobalShortcutsManager] App bundle ID: \(Bundle.main.bundleIdentifier ?? "unknown")")
         print("[GlobalShortcutsManager] Activation policy: \(NSApplication.shared.activationPolicy().rawValue)")
 
-        toggleRequestedHandler = onToggleRequested
+        hotkeyEventHandler = onHotkeyEvent
         feedbackHandler = onFeedback
 
         _ = KeyboardShortcuts.Name.toggleDictation
@@ -82,24 +82,30 @@ public class GlobalShortcutsManager {
 
             print("[GlobalShortcutsManager] Async listener task started")
 
-            for await _ in KeyboardShortcuts.events(.keyDown, for: .toggleDictation) {
+            for await event in KeyboardShortcuts.events(for: .toggleDictation) {
                 if Task.isCancelled {
                     print("[GlobalShortcutsManager] Listener task cancelled, exiting")
                     break
                 }
 
-                if let lastTime = lastHotkeyTime,
-                   Date().timeIntervalSince(lastTime) < debounceInterval
-                {
-                    print("[GlobalShortcutsManager] Debounced rapid keypress (within \(Int(debounceInterval * 1000))ms)")
-                    feedbackHandler?(.blockedTransition)
-                    continue
-                }
-                lastHotkeyTime = Date()
+                switch event {
+                case .keyDown:
+                    if let lastTime = lastHotkeyTime,
+                       Date().timeIntervalSince(lastTime) < debounceInterval
+                    {
+                        print("[GlobalShortcutsManager] Debounced rapid keypress (within \(Int(debounceInterval * 1000))ms)")
+                        feedbackHandler?(.blockedTransition)
+                        continue
+                    }
+                    lastHotkeyTime = Date()
+                    print("[GlobalShortcutsManager] SHORTCUT KEY DOWN")
+                    feedbackHandler?(.accepted)
+                    hotkeyEventHandler?(.keyDown)
 
-                print("[GlobalShortcutsManager] SHORTCUT TRIGGERED")
-                feedbackHandler?(.accepted)
-                toggleRequestedHandler?()
+                case .keyUp:
+                    print("[GlobalShortcutsManager] SHORTCUT KEY UP")
+                    hotkeyEventHandler?(.keyUp)
+                }
             }
 
             print("[GlobalShortcutsManager] Async listener task ended")
@@ -113,7 +119,7 @@ public class GlobalShortcutsManager {
         print("[GlobalShortcutsManager] Deinitializing...")
         shortcutListenerTask?.cancel()
         shortcutListenerTask = nil
-        toggleRequestedHandler = nil
+        hotkeyEventHandler = nil
         feedbackHandler = nil
         _isInitialized = false
         print("[GlobalShortcutsManager] Deinitialized")

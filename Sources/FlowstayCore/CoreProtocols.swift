@@ -215,6 +215,20 @@ public enum AppStatus {
     case error
 }
 
+public enum HotkeyPressMode: String, CaseIterable, Sendable {
+    case toggle
+    case holdToTalk
+
+    public var displayName: String {
+        switch self {
+        case .toggle:
+            "Toggle"
+        case .holdToTalk:
+            "Hold to Talk"
+        }
+    }
+}
+
 // MARK: - App Rule
 
 /// Represents an app-specific persona rule
@@ -354,6 +368,12 @@ public class AppState: ObservableObject {
         }
     }
 
+    @Published public var hotkeyPressMode: HotkeyPressMode {
+        didSet {
+            UserDefaults.standard.set(hotkeyPressMode.rawValue, forKey: "hotkeyPressMode")
+        }
+    }
+
     // MARK: - AI Provider Settings
 
     @Published public var selectedAIProviderId: String? {
@@ -432,6 +452,8 @@ public class AppState: ObservableObject {
         // Initialize sound feedback (default to true)
         soundFeedbackEnabled = UserDefaults.standard.object(forKey: "soundFeedbackEnabled") as? Bool ?? true
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
+        hotkeyPressMode = HotkeyPressMode(rawValue: UserDefaults.standard.string(forKey: "hotkeyPressMode") ?? "")
+            ?? .toggle
 
         // Load built-in personas
         var personas = Persona.builtInPresets
