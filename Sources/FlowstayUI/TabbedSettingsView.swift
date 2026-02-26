@@ -223,11 +223,16 @@ struct GeneralSettingsTab: View {
                         }
                     }
                     .pickerStyle(.segmented)
-                    Text(
-                        appState.hotkeyPressMode == .holdToTalk
-                            ? "Hold Option+Space while speaking, then release to stop."
-                            : "Press Option+Space to start or stop transcription."
-                    )
+                    Text({
+                        switch appState.hotkeyPressMode {
+                        case .push:
+                            "Press Option+Space to start or stop transcription."
+                        case .hold:
+                            "Hold the Fn key while speaking, then release Fn to stop."
+                        case .both:
+                            "Use Option+Space as push-to-toggle, Fn as hold-to-talk."
+                        }
+                    }())
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -15,6 +15,9 @@ public class GlobalShortcutsManager {
 
     /// Task that listens for keyboard shortcut events.
     private static var shortcutListenerTask: Task<Void, Never>?
+    private static var functionKeyGlobalMonitor: Any?
+    private static var functionKeyLocalMonitor: Any?
+    private static var isFunctionKeyPressed = false
 
     /// Debounce interval to prevent rapid double-triggers.
     private static let debounceInterval: TimeInterval = 0.3
@@ -57,6 +60,8 @@ public class GlobalShortcutsManager {
         // Cancel any existing listener task.
         shortcutListenerTask?.cancel()
         shortcutListenerTask = nil
+        removeFunctionKeyMonitors()
+        isFunctionKeyPressed = false
 
         // Set default only when user has not customized a shortcut.
         if KeyboardShortcuts.getShortcut(for: .toggleDictation) == nil {
@@ -100,18 +105,56 @@ public class GlobalShortcutsManager {
                     lastHotkeyTime = Date()
                     print("[GlobalShortcutsManager] SHORTCUT KEY DOWN")
                     feedbackHandler?(.accepted)
-                    hotkeyEventHandler?(.keyDown)
+                    hotkeyEventHandler?(.shortcutKeyDown)
 
                 case .keyUp:
                     print("[GlobalShortcutsManager] SHORTCUT KEY UP")
-                    hotkeyEventHandler?(.keyUp)
+                    hotkeyEventHandler?(.shortcutKeyUp)
                 }
             }
 
             print("[GlobalShortcutsManager] Async listener task ended")
         }
 
+        functionKeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
+            Task { @MainActor in
+                handleFunctionKeyFlagsChanged(event)
+            }
+        }
+
+        functionKeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            Task { @MainActor in
+                handleFunctionKeyFlagsChanged(event)
+            }
+            return event
+        }
+
         print("[GlobalShortcutsManager] Global hotkey listener registered")
+    }
+
+    private static func handleFunctionKeyFlagsChanged(_ event: NSEvent) {
+        let functionPressedNow = event.modifierFlags.contains(.function)
+        guard functionPressedNow != isFunctionKeyPressed else { return }
+
+        isFunctionKeyPressed = functionPressedNow
+        if functionPressedNow {
+            print("[GlobalShortcutsManager] FUNCTION KEY DOWN")
+            hotkeyEventHandler?(.functionKeyDown)
+        } else {
+            print("[GlobalShortcutsManager] FUNCTION KEY UP")
+            hotkeyEventHandler?(.functionKeyUp)
+        }
+    }
+
+    private static func removeFunctionKeyMonitors() {
+        if let functionKeyGlobalMonitor {
+            NSEvent.removeMonitor(functionKeyGlobalMonitor)
+            self.functionKeyGlobalMonitor = nil
+        }
+        if let functionKeyLocalMonitor {
+            NSEvent.removeMonitor(functionKeyLocalMonitor)
+            self.functionKeyLocalMonitor = nil
+        }
     }
 
     /// Stop listening for keyboard shortcuts (cleanup).
@@ -119,6 +162,8 @@ public class GlobalShortcutsManager {
         print("[GlobalShortcutsManager] Deinitializing...")
         shortcutListenerTask?.cancel()
         shortcutListenerTask = nil
+        removeFunctionKeyMonitors()
+        isFunctionKeyPressed = false
         hotkeyEventHandler = nil
         feedbackHandler = nil
         _isInitialized = false

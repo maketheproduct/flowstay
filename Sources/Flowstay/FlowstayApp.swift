@@ -615,22 +615,31 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
     private func handleHotkeyEvent(_ event: HotkeyInputEvent) {
         switch appState.hotkeyPressMode {
-        case .toggle:
+        case .push:
             resetHoldToTalkState()
-            guard event == .keyDown else { return }
+            guard event == .shortcutKeyDown else { return }
             handleHotkeyToggleRequested()
 
-        case .holdToTalk:
+        case .hold:
+            handleHoldToTalkEvent(event)
+
+        case .both:
+            if event == .shortcutKeyDown {
+                resetHoldToTalkState()
+                handleHotkeyToggleRequested()
+                return
+            }
             handleHoldToTalkEvent(event)
         }
     }
 
     private func handleHoldToTalkEvent(_ event: HotkeyInputEvent) {
         switch event {
-        case .keyDown:
+        case .functionKeyDown:
             guard !isHoldToTalkHotkeyPressed else { return }
             isHoldToTalkHotkeyPressed = true
             stopHoldToTalkAfterTransition = false
+            registerHotkeyKeydownIfNeeded()
 
             // Hold-to-talk only takes over recordings started by this hold interaction.
             guard !engineCoordinator.isRecording else {
@@ -641,10 +650,13 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             holdToTalkSessionActive = true
             handleHotkeyToggleRequested()
 
-        case .keyUp:
+        case .functionKeyUp:
             guard isHoldToTalkHotkeyPressed else { return }
             isHoldToTalkHotkeyPressed = false
             stopHoldToTalkSessionIfNeeded()
+
+        case .shortcutKeyDown, .shortcutKeyUp:
+            return
         }
     }
 
@@ -770,20 +782,28 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         applyOverlayVisibility(reason: "hotkey-pending-updated")
     }
 
+    private func registerHotkeyKeydownIfNeeded() {
+        if firstHotkeyKeydownAt == nil {
+            let now = Date()
+            firstHotkeyKeydownAt = now
+            logStartupMetric("first hotkey keydown", at: now)
+        }
+        if HotkeyStartPolicy.shouldShowStartPendingOnAccepted(
+            isRecording: engineCoordinator.isRecording,
+            isAwaitingCompletion: isAwaitingTranscriptionCompletion,
+            permissionsGranted: permissionManager.criticalPermissionsGranted,
+            modelsDownloaded: engineCoordinator.isModelDownloaded()
+        ) {
+            setHotkeyStartPending(true)
+        }
+    }
+
     private func handleHotkeyFeedback(_ event: HotkeyFeedbackEvent) {
         let now = Date()
         if event == .accepted {
-            if firstHotkeyKeydownAt == nil {
-                firstHotkeyKeydownAt = now
-                logStartupMetric("first hotkey keydown", at: now)
-            }
-            if HotkeyStartPolicy.shouldShowStartPendingOnAccepted(
-                isRecording: engineCoordinator.isRecording,
-                isAwaitingCompletion: isAwaitingTranscriptionCompletion,
-                permissionsGranted: permissionManager.criticalPermissionsGranted,
-                modelsDownloaded: engineCoordinator.isModelDownloaded()
-            ) {
-                setHotkeyStartPending(true)
+            // "accepted" feedback currently originates from the push shortcut path.
+            if appState.hotkeyPressMode != .hold {
+                registerHotkeyKeydownIfNeeded()
             }
             return
         }

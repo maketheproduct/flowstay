@@ -216,15 +216,31 @@ public enum AppStatus {
 }
 
 public enum HotkeyPressMode: String, CaseIterable, Sendable {
-    case toggle
-    case holdToTalk
+    case push
+    case hold
+    case both
 
     public var displayName: String {
         switch self {
-        case .toggle:
-            "Toggle"
-        case .holdToTalk:
-            "Hold to Talk"
+        case .push:
+            "Push"
+        case .hold:
+            "Hold"
+        case .both:
+            "Both"
+        }
+    }
+
+    static func fromStoredValue(_ rawValue: String?) -> HotkeyPressMode {
+        switch rawValue {
+        case HotkeyPressMode.push.rawValue, "toggle":
+            .push
+        case HotkeyPressMode.hold.rawValue, "holdToTalk":
+            .hold
+        case HotkeyPressMode.both.rawValue:
+            .both
+        default:
+            .push
         }
     }
 }
@@ -452,8 +468,7 @@ public class AppState: ObservableObject {
         // Initialize sound feedback (default to true)
         soundFeedbackEnabled = UserDefaults.standard.object(forKey: "soundFeedbackEnabled") as? Bool ?? true
         showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
-        hotkeyPressMode = HotkeyPressMode(rawValue: UserDefaults.standard.string(forKey: "hotkeyPressMode") ?? "")
-            ?? .toggle
+        hotkeyPressMode = HotkeyPressMode.fromStoredValue(UserDefaults.standard.string(forKey: "hotkeyPressMode"))
 
         // Load built-in personas
         var personas = Persona.builtInPresets

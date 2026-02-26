@@ -229,11 +229,14 @@ final class AppStateTests: XCTestCase {
     }
 
     func testHotkeyPressModeCanBeSet() {
-        appState.hotkeyPressMode = .holdToTalk
-        XCTAssertEqual(appState.hotkeyPressMode, .holdToTalk)
+        appState.hotkeyPressMode = .hold
+        XCTAssertEqual(appState.hotkeyPressMode, .hold)
 
-        appState.hotkeyPressMode = .toggle
-        XCTAssertEqual(appState.hotkeyPressMode, .toggle)
+        appState.hotkeyPressMode = .push
+        XCTAssertEqual(appState.hotkeyPressMode, .push)
+
+        appState.hotkeyPressMode = .both
+        XCTAssertEqual(appState.hotkeyPressMode, .both)
     }
 
     func testClaudeCodeModelSelectionCanBeSet() {

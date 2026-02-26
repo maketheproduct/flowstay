@@ -11,8 +11,10 @@ public enum HotkeyFeedbackEvent: Equatable, Sendable {
 }
 
 public enum HotkeyInputEvent: Equatable, Sendable {
-    case keyDown
-    case keyUp
+    case shortcutKeyDown
+    case shortcutKeyUp
+    case functionKeyDown
+    case functionKeyUp
 }
 
 public struct HotkeyStartInput: Equatable, Sendable {
