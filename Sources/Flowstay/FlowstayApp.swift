@@ -615,7 +615,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
     private func handleHotkeyEvent(_ event: HotkeyInputEvent) {
         switch appState.hotkeyPressMode {
-        case .push:
+        case .toggle:
             resetHoldToTalkState()
             guard event == .shortcutKeyDown else { return }
             handleHotkeyToggleRequested()
@@ -801,7 +801,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private func handleHotkeyFeedback(_ event: HotkeyFeedbackEvent) {
         let now = Date()
         if event == .accepted {
-            // "accepted" feedback currently originates from the push shortcut path.
+            // "accepted" feedback currently originates from the toggle shortcut path.
             if appState.hotkeyPressMode != .hold {
                 registerHotkeyKeydownIfNeeded()
             }

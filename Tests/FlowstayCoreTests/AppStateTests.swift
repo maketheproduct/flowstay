@@ -232,8 +232,8 @@ final class AppStateTests: XCTestCase {
         appState.hotkeyPressMode = .hold
         XCTAssertEqual(appState.hotkeyPressMode, .hold)
 
-        appState.hotkeyPressMode = .push
-        XCTAssertEqual(appState.hotkeyPressMode, .push)
+        appState.hotkeyPressMode = .toggle
+        XCTAssertEqual(appState.hotkeyPressMode, .toggle)
 
         appState.hotkeyPressMode = .both
         XCTAssertEqual(appState.hotkeyPressMode, .both)

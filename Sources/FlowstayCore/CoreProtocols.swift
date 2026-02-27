@@ -216,14 +216,14 @@ public enum AppStatus {
 }
 
 public enum HotkeyPressMode: String, CaseIterable, Sendable {
-    case push
+    case toggle
     case hold
     case both
 
     public var displayName: String {
         switch self {
-        case .push:
-            "Push"
+        case .toggle:
+            "Toggle"
         case .hold:
             "Hold"
         case .both:
@@ -233,14 +233,14 @@ public enum HotkeyPressMode: String, CaseIterable, Sendable {
 
     static func fromStoredValue(_ rawValue: String?) -> HotkeyPressMode {
         switch rawValue {
-        case HotkeyPressMode.push.rawValue, "toggle":
-            .push
+        case HotkeyPressMode.toggle.rawValue, "push":
+            .toggle
         case HotkeyPressMode.hold.rawValue, "holdToTalk":
             .hold
         case HotkeyPressMode.both.rawValue:
             .both
         default:
-            .push
+            .toggle
         }
     }
 }

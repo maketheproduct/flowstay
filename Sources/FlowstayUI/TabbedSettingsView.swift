@@ -225,12 +225,12 @@ struct GeneralSettingsTab: View {
                     .pickerStyle(.segmented)
                     Text({
                         switch appState.hotkeyPressMode {
-                        case .push:
+                        case .toggle:
                             "Press Option+Space to start or stop transcription."
                         case .hold:
                             "Hold the Fn key while speaking, then release Fn to stop."
                         case .both:
-                            "Use Option+Space as push-to-toggle, Fn as hold-to-talk."
+                            "Use Option+Space as toggle, Fn as hold-to-talk."
                         }
                     }())
                         .font(.caption)
