@@ -302,7 +302,7 @@ public enum RecoveryDiagnosticsService {
     private static func bundleCheck(bundle: Bundle) -> RecoveryCheckResult {
         let bundlePath = bundle.bundlePath
         let isTranslocated = bundlePath.contains("/AppTranslocation/")
-        let quarantineValue = currentBundleQuarantineValue(bundlePath: bundlePath)
+        let quarantineValue = QuarantineHelper.attribute(at: bundlePath)
 
         if isTranslocated || quarantineValue != nil {
             let quarantineDetail = quarantineValue.map { " Quarantine: \($0)." } ?? ""
@@ -605,22 +605,10 @@ public enum RecoveryDiagnosticsService {
             return .invalid("Decode failed: \(error.localizedDescription)")
         }
     }
-
-    private static func currentBundleQuarantineValue(bundlePath: String) -> String? {
-        let name = "com.apple.quarantine"
-        let size = getxattr(bundlePath, name, nil, 0, 0, 0)
-        guard size > 0 else { return nil }
-
-        var buffer = [CChar](repeating: 0, count: size + 1)
-        let result = getxattr(bundlePath, name, &buffer, size, 0, 0)
-        guard result >= 0 else { return nil }
-
-        let bytes = buffer.prefix(Int(size)).map { UInt8(bitPattern: $0) }
-        return String(decoding: bytes, as: UTF8.self)
-    }
 }
 
 public enum RecoveryRepairService {
+    @MainActor
     @discardableResult
     public static func apply(
         _ action: RecoveryAction,
@@ -694,6 +682,12 @@ public enum RecoveryRepairService {
         postShortcutDidChangeNotification(shortcutName: shortcutName)
     }
 
+    /// Posts the internal notification that KeyboardShortcuts uses to refresh its
+    /// in-memory shortcut cache after a UserDefaults write. This relies on a private
+    /// implementation detail of the library — if the notification name changes in a
+    /// future version, the repair will still persist correctly to UserDefaults but the
+    /// running app won't pick up the change until the next relaunch.
+    /// Reference: https://github.com/sindresorhus/KeyboardShortcuts (Shortcut observer)
     private static func postShortcutDidChangeNotification(shortcutName: String) {
         let notificationName = Notification.Name("KeyboardShortcuts_shortcutByNameDidChange")
         NotificationCenter.default.post(

@@ -3,38 +3,21 @@ import XCTest
 
 @MainActor
 final class AppStateRecoveryTests: XCTestCase {
-    private let trackedKeys = [
-        "userPersonas",
-        "appRules",
-        "hotkeyPressMode",
-        "hasCompletedOnboarding",
-        "selectedPersonaId",
-        "launchAtLogin",
-    ]
-    private var originalValues: [String: Any] = [:]
+    private var suiteName: String!
     private var defaults: UserDefaults!
     private var appState: AppState!
 
     override func setUp() async throws {
-        defaults = .standard
-        originalValues = trackedKeys.reduce(into: [:]) { partialResult, key in
-            if let value = defaults.object(forKey: key) {
-                partialResult[key] = value
-            }
-            defaults.removeObject(forKey: key)
-        }
+        suiteName = "AppStateRecoveryTests.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
+        defaults.removePersistentDomain(forName: suiteName)
     }
 
     override func tearDown() async throws {
-        for key in trackedKeys {
-            defaults.removeObject(forKey: key)
-        }
-        for (key, value) in originalValues {
-            defaults.set(value, forKey: key)
-        }
+        defaults.removePersistentDomain(forName: suiteName)
         appState = nil
         defaults = nil
-        originalValues = [:]
+        suiteName = nil
     }
 
     func testCorruptUserPersonasPayloadIsRemovedDuringInitialization() {
