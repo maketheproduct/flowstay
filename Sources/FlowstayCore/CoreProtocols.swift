@@ -240,7 +240,41 @@ public enum HotkeyPressMode: String, CaseIterable, Sendable {
         case HotkeyPressMode.both.rawValue:
             .both
         default:
-            .toggle
+            .both
+        }
+    }
+
+    static func initialMode(storedValue: String?, hasExistingOnboardingState: Bool) -> HotkeyPressMode {
+        if let storedValue {
+            return fromStoredValue(storedValue)
+        }
+
+        let _ = hasExistingOnboardingState
+        return .both
+    }
+}
+
+public enum HoldToTalkInputSource: String, CaseIterable, Sendable {
+    case functionKey
+    case alternativeShortcut
+
+    public var displayName: String {
+        switch self {
+        case .functionKey:
+            "Function key"
+        case .alternativeShortcut:
+            "Alternative shortcut"
+        }
+    }
+
+    static func fromStoredValue(_ rawValue: String?) -> HoldToTalkInputSource {
+        switch rawValue {
+        case HoldToTalkInputSource.alternativeShortcut.rawValue:
+            .alternativeShortcut
+        case HoldToTalkInputSource.functionKey.rawValue, nil:
+            .functionKey
+        default:
+            .functionKey
         }
     }
 }
@@ -270,6 +304,8 @@ import os
 
 public class AppState: ObservableObject {
     private let logger = Logger(subsystem: "com.flowstay.core", category: "AppState")
+    private let defaults: UserDefaults
+    private let recordAutomaticRepair: (RecoveryAutomaticRepair) -> Void
 
     @Published public var status: AppStatus = .idle
     @Published public var isRecording = false
@@ -279,26 +315,26 @@ public class AppState: ObservableObject {
     @Published public var errorMessage: String?
     @Published public var hasCompletedOnboarding: Bool {
         didSet {
-            UserDefaults.standard.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding")
+            defaults.set(hasCompletedOnboarding, forKey: "hasCompletedOnboarding")
         }
     }
 
     @Published public var autoPasteEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(autoPasteEnabled, forKey: "autoPasteEnabled")
+            defaults.set(autoPasteEnabled, forKey: "autoPasteEnabled")
         }
     }
 
     @Published public var silenceTimeoutSeconds: Double {
         didSet {
-            UserDefaults.standard.set(silenceTimeoutSeconds, forKey: "silenceTimeoutSeconds")
+            defaults.set(silenceTimeoutSeconds, forKey: "silenceTimeoutSeconds")
         }
     }
 
     /// History retention in days. 0 = unlimited.
     @Published public var historyRetentionDays: Int {
         didSet {
-            UserDefaults.standard.set(historyRetentionDays, forKey: "historyRetentionDays")
+            defaults.set(historyRetentionDays, forKey: "historyRetentionDays")
         }
     }
 
@@ -310,16 +346,16 @@ public class AppState: ObservableObject {
 
     @Published public var personasEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(personasEnabled, forKey: "personasEnabled")
+            defaults.set(personasEnabled, forKey: "personasEnabled")
         }
     }
 
     @Published public var selectedPersonaId: String? {
         didSet {
             if let id = selectedPersonaId {
-                UserDefaults.standard.set(id, forKey: "selectedPersonaId")
+                defaults.set(id, forKey: "selectedPersonaId")
             } else {
-                UserDefaults.standard.removeObject(forKey: "selectedPersonaId")
+                defaults.removeObject(forKey: "selectedPersonaId")
             }
         }
     }
@@ -330,7 +366,7 @@ public class AppState: ObservableObject {
             let userPersonas = allPersonas.filter { !$0.isBuiltIn }
             do {
                 let encoded = try JSONEncoder().encode(userPersonas)
-                UserDefaults.standard.set(encoded, forKey: "userPersonas")
+                defaults.set(encoded, forKey: "userPersonas")
             } catch {
                 logger.error("[AppState] Failed to encode user personas: \(error.localizedDescription)")
             }
@@ -339,7 +375,7 @@ public class AppState: ObservableObject {
 
     @Published public var useSmartAppDetection: Bool {
         didSet {
-            UserDefaults.standard.set(useSmartAppDetection, forKey: "useSmartAppDetection")
+            defaults.set(useSmartAppDetection, forKey: "useSmartAppDetection")
         }
     }
 
@@ -347,7 +383,7 @@ public class AppState: ObservableObject {
         didSet {
             do {
                 let encoded = try JSONEncoder().encode(appRules)
-                UserDefaults.standard.set(encoded, forKey: "appRules")
+                defaults.set(encoded, forKey: "appRules")
             } catch {
                 logger.error("[AppState] Failed to encode app rules: \(error.localizedDescription)")
             }
@@ -356,37 +392,43 @@ public class AppState: ObservableObject {
 
     @Published public var showPersonaDiscardConfirmation: Bool {
         didSet {
-            UserDefaults.standard.set(showPersonaDiscardConfirmation, forKey: "showPersonaDiscardConfirmation")
+            defaults.set(showPersonaDiscardConfirmation, forKey: "showPersonaDiscardConfirmation")
         }
     }
 
     @Published public var showPersonaDeleteConfirmation: Bool {
         didSet {
-            UserDefaults.standard.set(showPersonaDeleteConfirmation, forKey: "showPersonaDeleteConfirmation")
+            defaults.set(showPersonaDeleteConfirmation, forKey: "showPersonaDeleteConfirmation")
         }
     }
 
     @Published public var showAppRuleDeleteConfirmation: Bool {
         didSet {
-            UserDefaults.standard.set(showAppRuleDeleteConfirmation, forKey: "showAppRuleDeleteConfirmation")
+            defaults.set(showAppRuleDeleteConfirmation, forKey: "showAppRuleDeleteConfirmation")
         }
     }
 
     @Published public var soundFeedbackEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(soundFeedbackEnabled, forKey: "soundFeedbackEnabled")
+            defaults.set(soundFeedbackEnabled, forKey: "soundFeedbackEnabled")
         }
     }
 
     @Published public var showOverlay: Bool {
         didSet {
-            UserDefaults.standard.set(showOverlay, forKey: "showOverlay")
+            defaults.set(showOverlay, forKey: "showOverlay")
         }
     }
 
     @Published public var hotkeyPressMode: HotkeyPressMode {
         didSet {
-            UserDefaults.standard.set(hotkeyPressMode.rawValue, forKey: "hotkeyPressMode")
+            defaults.set(hotkeyPressMode.rawValue, forKey: "hotkeyPressMode")
+        }
+    }
+
+    @Published public var holdToTalkInputSource: HoldToTalkInputSource {
+        didSet {
+            defaults.set(holdToTalkInputSource.rawValue, forKey: "holdToTalkInputSource")
         }
     }
 
@@ -395,9 +437,9 @@ public class AppState: ObservableObject {
     @Published public var selectedAIProviderId: String? {
         didSet {
             if let id = selectedAIProviderId {
-                UserDefaults.standard.set(id, forKey: "selectedAIProviderId")
+                defaults.set(id, forKey: "selectedAIProviderId")
             } else {
-                UserDefaults.standard.removeObject(forKey: "selectedAIProviderId")
+                defaults.removeObject(forKey: "selectedAIProviderId")
             }
         }
     }
@@ -405,9 +447,9 @@ public class AppState: ObservableObject {
     @Published public var selectedOpenRouterModelId: String? {
         didSet {
             if let id = selectedOpenRouterModelId {
-                UserDefaults.standard.set(id, forKey: "selectedOpenRouterModelId")
+                defaults.set(id, forKey: "selectedOpenRouterModelId")
             } else {
-                UserDefaults.standard.removeObject(forKey: "selectedOpenRouterModelId")
+                defaults.removeObject(forKey: "selectedOpenRouterModelId")
             }
         }
     }
@@ -415,16 +457,16 @@ public class AppState: ObservableObject {
     @Published public var selectedClaudeCodeModelId: String? {
         didSet {
             if let id = selectedClaudeCodeModelId {
-                UserDefaults.standard.set(id, forKey: "selectedClaudeCodeModelId")
+                defaults.set(id, forKey: "selectedClaudeCodeModelId")
             } else {
-                UserDefaults.standard.removeObject(forKey: "selectedClaudeCodeModelId")
+                defaults.removeObject(forKey: "selectedClaudeCodeModelId")
             }
         }
     }
 
     @Published public var claudeCodeProcessingMode: String {
         didSet {
-            UserDefaults.standard.set(claudeCodeProcessingMode, forKey: "claudeCodeProcessingMode")
+            defaults.set(claudeCodeProcessingMode, forKey: "claudeCodeProcessingMode")
         }
     }
 
@@ -449,62 +491,199 @@ public class AppState: ObservableObject {
         return total / min(validTranscripts.count, 10)
     }
 
-    public init() {
-        hasCompletedOnboarding = UserDefaults.standard.bool(forKey: "hasCompletedOnboarding")
-        autoPasteEnabled = UserDefaults.standard.bool(forKey: "autoPasteEnabled")
-        silenceTimeoutSeconds = UserDefaults.standard.object(forKey: "silenceTimeoutSeconds") as? Double ?? 30.0
-        historyRetentionDays = UserDefaults.standard.object(forKey: "historyRetentionDays") as? Int ?? 30
-        launchAtLogin = SMAppService.mainApp.status == .enabled
+    public init(
+        defaults: UserDefaults = .standard,
+        launchAtLoginStatusProvider: @escaping () throws -> Bool = {
+            SMAppService.mainApp.status == .enabled
+        },
+        recordAutomaticRepair: @escaping (RecoveryAutomaticRepair) -> Void = {
+            StartupRecoveryManager.shared.recordAutomaticRepair($0)
+        }
+    ) {
+        self.defaults = defaults
+        self.recordAutomaticRepair = recordAutomaticRepair
+
+        hasCompletedOnboarding = defaults.bool(forKey: "hasCompletedOnboarding")
+        autoPasteEnabled = defaults.bool(forKey: "autoPasteEnabled")
+        silenceTimeoutSeconds = defaults.object(forKey: "silenceTimeoutSeconds") as? Double ?? 30.0
+        historyRetentionDays = defaults.object(forKey: "historyRetentionDays") as? Int ?? 30
+        launchAtLogin = Self.resolveInitialLaunchAtLogin(
+            defaults: defaults,
+            logger: logger,
+            statusProvider: launchAtLoginStatusProvider
+        )
 
         // Initialize personas settings
-        personasEnabled = UserDefaults.standard.bool(forKey: "personasEnabled")
-        useSmartAppDetection = UserDefaults.standard.bool(forKey: "useSmartAppDetection")
+        personasEnabled = defaults.bool(forKey: "personasEnabled")
+        useSmartAppDetection = defaults.bool(forKey: "useSmartAppDetection")
 
         // Initialize confirmation preferences (default to true)
-        showPersonaDiscardConfirmation = UserDefaults.standard.object(forKey: "showPersonaDiscardConfirmation") as? Bool ?? true
-        showPersonaDeleteConfirmation = UserDefaults.standard.object(forKey: "showPersonaDeleteConfirmation") as? Bool ?? true
-        showAppRuleDeleteConfirmation = UserDefaults.standard.object(forKey: "showAppRuleDeleteConfirmation") as? Bool ?? true
+        showPersonaDiscardConfirmation = defaults.object(forKey: "showPersonaDiscardConfirmation") as? Bool ?? true
+        showPersonaDeleteConfirmation = defaults.object(forKey: "showPersonaDeleteConfirmation") as? Bool ?? true
+        showAppRuleDeleteConfirmation = defaults.object(forKey: "showAppRuleDeleteConfirmation") as? Bool ?? true
 
         // Initialize sound feedback (default to true)
-        soundFeedbackEnabled = UserDefaults.standard.object(forKey: "soundFeedbackEnabled") as? Bool ?? true
-        showOverlay = UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
-        hotkeyPressMode = HotkeyPressMode.fromStoredValue(UserDefaults.standard.string(forKey: "hotkeyPressMode"))
+        soundFeedbackEnabled = defaults.object(forKey: "soundFeedbackEnabled") as? Bool ?? true
+        showOverlay = defaults.object(forKey: "showOverlay") as? Bool ?? true
+
+        let storedHotkeyPressMode = defaults.string(forKey: "hotkeyPressMode")
+        let resolvedHotkeyPressMode = Self.resolveInitialHotkeyPressMode(defaults: defaults)
+        hotkeyPressMode = resolvedHotkeyPressMode
+        if storedHotkeyPressMode != resolvedHotkeyPressMode.rawValue {
+            defaults.set(resolvedHotkeyPressMode.rawValue, forKey: "hotkeyPressMode")
+            if let storedHotkeyPressMode {
+                logger.warning("[AppState] Normalized hotkeyPressMode from \(storedHotkeyPressMode) to \(resolvedHotkeyPressMode.rawValue)")
+                recordAutomaticRepair(
+                    RecoveryAutomaticRepair(
+                        key: "hotkeyPressMode",
+                        title: "Normalized hotkey mode",
+                        detail: "Replaced unsupported stored value \(storedHotkeyPressMode) with \(resolvedHotkeyPressMode.rawValue)."
+                    )
+                )
+            }
+        }
+
+        let storedHoldInputSource = defaults.string(forKey: "holdToTalkInputSource")
+        let resolvedHoldInputSource = HoldToTalkInputSource.fromStoredValue(storedHoldInputSource)
+        holdToTalkInputSource = resolvedHoldInputSource
+        if storedHoldInputSource != resolvedHoldInputSource.rawValue {
+            defaults.set(resolvedHoldInputSource.rawValue, forKey: "holdToTalkInputSource")
+            if let storedHoldInputSource {
+                logger.warning("[AppState] Normalized holdToTalkInputSource from \(storedHoldInputSource) to \(resolvedHoldInputSource.rawValue)")
+                recordAutomaticRepair(
+                    RecoveryAutomaticRepair(
+                        key: "holdToTalkInputSource",
+                        title: "Normalized hold input",
+                        detail: "Replaced unsupported stored value \(storedHoldInputSource) with \(resolvedHoldInputSource.rawValue)."
+                    )
+                )
+            }
+        }
 
         // Load built-in personas
         var personas = Persona.builtInPresets
 
         // Load user personas
-        if let data = UserDefaults.standard.data(forKey: "userPersonas") {
-            do {
-                let userPersonas = try JSONDecoder().decode([Persona].self, from: data)
-                personas.append(contentsOf: userPersonas)
-            } catch {
-                logger.error("[AppState] Failed to decode user personas: \(error.localizedDescription)")
-            }
+        if let userPersonas = Self.decodeStoredValue(
+            [Persona].self,
+            from: defaults,
+            key: "userPersonas",
+            logger: logger,
+            recordAutomaticRepair: recordAutomaticRepair
+        ) {
+            personas.append(contentsOf: userPersonas)
         }
 
         allPersonas = personas
-        selectedPersonaId = UserDefaults.standard.string(forKey: "selectedPersonaId")
-
-        // Load app rules
-        if let data = UserDefaults.standard.data(forKey: "appRules") {
-            do {
-                let rules = try JSONDecoder().decode([AppRule].self, from: data)
-                appRules = rules
-            } catch {
-                logger.error("[AppState] Failed to decode app rules: \(error.localizedDescription)")
-                appRules = []
-            }
+        let storedSelectedPersonaId = defaults.string(forKey: "selectedPersonaId")
+        if let storedSelectedPersonaId,
+           personas.contains(where: { $0.id == storedSelectedPersonaId })
+        {
+            selectedPersonaId = storedSelectedPersonaId
         } else {
-            appRules = []
+            selectedPersonaId = nil
+            if let storedSelectedPersonaId {
+                logger.warning("[AppState] Clearing stale selectedPersonaId: \(storedSelectedPersonaId)")
+                defaults.removeObject(forKey: "selectedPersonaId")
+                recordAutomaticRepair(
+                    RecoveryAutomaticRepair(
+                        key: "selectedPersonaId",
+                        title: "Cleared stale selected persona",
+                        detail: "Removed missing persona selection \(storedSelectedPersonaId)."
+                    )
+                )
+            }
         }
 
+        // Load app rules
+        appRules = Self.decodeStoredValue(
+            [AppRule].self,
+            from: defaults,
+            key: "appRules",
+            logger: logger,
+            recordAutomaticRepair: recordAutomaticRepair
+        ) ?? []
+
         // Initialize AI provider settings
-        selectedAIProviderId = UserDefaults.standard.string(forKey: "selectedAIProviderId")
-        selectedOpenRouterModelId = UserDefaults.standard.string(forKey: "selectedOpenRouterModelId")
-        selectedClaudeCodeModelId = UserDefaults.standard.string(forKey: "selectedClaudeCodeModelId")
-        claudeCodeProcessingMode = UserDefaults.standard.string(forKey: "claudeCodeProcessingMode")
+        selectedAIProviderId = defaults.string(forKey: "selectedAIProviderId")
+        selectedOpenRouterModelId = defaults.string(forKey: "selectedOpenRouterModelId")
+        selectedClaudeCodeModelId = defaults.string(forKey: "selectedClaudeCodeModelId")
+        claudeCodeProcessingMode = defaults.string(forKey: "claudeCodeProcessingMode")
             ?? ClaudeCodeProcessingMode.rewriteOnly.rawValue
+    }
+
+    private static func resolveInitialHotkeyPressMode(defaults: UserDefaults) -> HotkeyPressMode {
+        let hasExistingInstallSignals =
+            defaults.object(forKey: "hasCompletedOnboarding") != nil ||
+            defaults.object(forKey: "notificationPromptAttempted") != nil
+
+        return HotkeyPressMode.initialMode(
+            storedValue: defaults.string(forKey: "hotkeyPressMode"),
+            hasExistingOnboardingState: hasExistingInstallSignals
+        )
+    }
+
+    private static func resolveInitialLaunchAtLogin(
+        defaults: UserDefaults,
+        logger: Logger,
+        statusProvider: () throws -> Bool
+    ) -> Bool {
+        do {
+            return try statusProvider()
+        } catch {
+            logger.error("[AppState] Failed to read launch at login status: \(error.localizedDescription)")
+            if let storedPreference = defaults.object(forKey: "launchAtLogin") as? Bool {
+                logger.warning("[AppState] Falling back to stored launchAtLogin preference: \(storedPreference)")
+                return storedPreference
+            }
+            return false
+        }
+    }
+
+    private static func decodeStoredValue<T: Decodable>(
+        _ type: T.Type,
+        from defaults: UserDefaults,
+        key: String,
+        logger: Logger,
+        recordAutomaticRepair: (RecoveryAutomaticRepair) -> Void
+    ) -> T? {
+        let decoder = JSONDecoder()
+
+        if let data = defaults.data(forKey: key) {
+            if let decoded = try? decoder.decode(T.self, from: data) {
+                return decoded
+            }
+        }
+
+        if let string = defaults.string(forKey: key),
+           let data = string.data(using: .utf8),
+           let decoded = try? decoder.decode(T.self, from: data)
+        {
+            return decoded
+        }
+
+        if let object = defaults.object(forKey: key),
+           JSONSerialization.isValidJSONObject(object),
+           let data = try? JSONSerialization.data(withJSONObject: object),
+           let decoded = try? decoder.decode(T.self, from: data)
+        {
+            return decoded
+        }
+
+        guard defaults.object(forKey: key) != nil else {
+            return nil
+        }
+
+        logger.error("[AppState] Failed to decode \(key, privacy: .public); removing persisted value")
+        defaults.removeObject(forKey: key)
+        recordAutomaticRepair(
+            RecoveryAutomaticRepair(
+                key: key,
+                title: "Removed corrupt stored value",
+                detail: "Failed to decode persisted value for \(key)."
+            )
+        )
+        return nil
     }
 
     // MARK: - Persona Management
@@ -542,6 +721,7 @@ public class AppState: ObservableObject {
     }
 
     private func setLaunchAtLogin(enabled: Bool) {
+        defaults.set(enabled, forKey: "launchAtLogin")
         do {
             if enabled {
                 if SMAppService.mainApp.status == .enabled {

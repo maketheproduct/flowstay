@@ -100,6 +100,7 @@ class AppInitializationService: ObservableObject {
     /// Initialize the app on first launch
     func initializeApp() async {
         print("[AppInitializationService] Starting app initialization...")
+        StartupRecoveryManager.shared.markStage(.appInitializationStarted)
 
         // Only check notification permission status (don't request - that happens in onboarding)
         _ = await NotificationManager.shared.checkPermissionStatus()
@@ -180,6 +181,7 @@ class AppInitializationService: ObservableObject {
         UpdateManager.shared.initialize()
         print("[AppInitializationService] Auto-update system initialized")
 
+        StartupRecoveryManager.shared.markStage(.appInitializationCompleted)
         hasInitialized = true
         print("[AppInitializationService] App initialization complete")
     }
@@ -208,8 +210,15 @@ class AppInitializationService: ObservableObject {
             return
         }
 
+        if StartupRecoveryManager.shared.shouldSkipGlobalShortcuts {
+            print("[AppInitializationService] Skipping global shortcuts - startup recovery active")
+            StartupRecoveryManager.shared.markSubsystemSkipped(.globalShortcuts)
+            return
+        }
+
         if !GlobalShortcutsManager.isInitialized {
             print("[AppInitializationService] Initializing global shortcuts...")
+            StartupRecoveryManager.shared.markStage(.shortcutsInitializing)
             GlobalShortcutsManager.initialize(
                 onHotkeyEvent: onHotkeyEvent,
                 onFeedback: onFeedback

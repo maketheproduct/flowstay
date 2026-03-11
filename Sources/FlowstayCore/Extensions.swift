@@ -5,16 +5,28 @@ import SwiftUI
 
 // MARK: - UserDefaults Extensions
 
-extension UserDefaults {
+public extension UserDefaults {
     /// App-specific keys
-    enum FlowstayKeys {
+    internal enum FlowstayKeys {
         static let hasCompletedOnboarding = "hasCompletedOnboarding"
+        static let notificationPromptAttempted = "notificationPromptAttempted"
+        static let onboardingDeferredForModelDownload = "onboardingDeferredForModelDownload"
     }
 
     /// Convenience methods for app settings
-    public var hasCompletedOnboarding: Bool {
+    var hasCompletedOnboarding: Bool {
         get { bool(forKey: FlowstayKeys.hasCompletedOnboarding) }
         set { set(newValue, forKey: FlowstayKeys.hasCompletedOnboarding) }
+    }
+
+    var notificationPromptAttempted: Bool {
+        get { bool(forKey: FlowstayKeys.notificationPromptAttempted) }
+        set { set(newValue, forKey: FlowstayKeys.notificationPromptAttempted) }
+    }
+
+    var onboardingDeferredForModelDownload: Bool {
+        get { bool(forKey: FlowstayKeys.onboardingDeferredForModelDownload) }
+        set { set(newValue, forKey: FlowstayKeys.onboardingDeferredForModelDownload) }
     }
 }
 

@@ -8,6 +8,7 @@ public protocol MenuBarPopoverController: AnyObject {
     func closePopover()
     func openSettingsWindow()
     func openOnboardingWindow()
+    func openRecoveryWindow()
     func toggleTranscriptionFromMenuBar()
 }
 
@@ -40,6 +41,11 @@ public class MenuBarHelper {
     /// Open the onboarding window
     public static func openOnboarding() {
         delegate?.openOnboardingWindow()
+    }
+
+    /// Open the startup recovery window
+    public static func openRecovery() {
+        delegate?.openRecoveryWindow()
     }
 
     /// Toggle transcription using the app delegate policy path.
