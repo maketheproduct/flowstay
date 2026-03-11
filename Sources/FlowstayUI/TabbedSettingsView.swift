@@ -113,7 +113,7 @@ struct GeneralSettingsTab: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     SettingsSectionCard("Speech Engine") {
-                        SettingsCardRow {
+                        SettingsCardRow(showsDivider: settingsViewModel.engineError != nil) {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
@@ -584,19 +584,23 @@ private struct PersonaRadioRow: View {
 
             Spacer()
 
-            if let onEdit, let onDelete {
+            if onEdit != nil || onDelete != nil {
                 HStack(spacing: 8) {
-                    Button(action: onEdit) {
-                        Image(systemName: "pencil")
-                            .foregroundStyle(.secondary)
+                    if let onEdit {
+                        Button(action: onEdit) {
+                            Image(systemName: "pencil")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
 
-                    Button(action: onDelete) {
-                        Image(systemName: "trash")
-                            .foregroundStyle(.red)
+                    if let onDelete {
+                        Button(action: onDelete) {
+                            Image(systemName: "trash")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -1013,6 +1017,10 @@ struct PersonasTab: View {
     @State private var dontAskAppRuleDeleteAgain = false
     @State private var showingDisconnectAlert = false
 
+    private var personasById: [String: Persona] {
+        Dictionary(uniqueKeysWithValues: appState.allPersonas.map { ($0.id, $0) })
+    }
+
     var isPersonasAvailable: Bool {
         // Personas available based on selected provider
         switch appState.selectedAIProviderId {
@@ -1208,95 +1216,92 @@ struct PersonasTab: View {
 
                                         // Existing rules
                                         if !appState.appRules.isEmpty {
-                                            ScrollView {
-                                                LazyVStack(spacing: 8) {
-                                                    ForEach(appState.appRules.sorted(by: { $0.appName < $1.appName })) { rule in
-                                                        HStack(spacing: 12) {
-                                                            if let iconData = rule.appIcon,
-                                                               let nsImage = NSImage(data: iconData)
-                                                            {
-                                                                Image(nsImage: nsImage)
-                                                                    .resizable()
-                                                                    .frame(width: 32, height: 32)
-                                                            } else {
-                                                                Image(systemName: "app.fill")
-                                                                    .font(.system(size: 24))
-                                                                    .foregroundStyle(.secondary)
-                                                            }
+                                            VStack(spacing: 8) {
+                                                ForEach(appState.appRules.sorted(by: { $0.appName < $1.appName })) { rule in
+                                                    HStack(spacing: 12) {
+                                                        if let iconData = rule.appIcon,
+                                                           let nsImage = NSImage(data: iconData)
+                                                        {
+                                                            Image(nsImage: nsImage)
+                                                                .resizable()
+                                                                .frame(width: 32, height: 32)
+                                                        } else {
+                                                            Image(systemName: "app.fill")
+                                                                .font(.system(size: 24))
+                                                                .foregroundStyle(.secondary)
+                                                        }
 
-                                                            VStack(alignment: .leading, spacing: 2) {
-                                                                Text(rule.appName)
-                                                                    .font(.subheadline.weight(.medium))
+                                                        VStack(alignment: .leading, spacing: 2) {
+                                                            Text(rule.appName)
+                                                                .font(.subheadline.weight(.medium))
 
-                                                                if let persona = appState.allPersonas.first(where: { $0.id == rule.personaId }) {
-                                                                    HStack(spacing: 6) {
-                                                                        Text("\u{2192}")
-                                                                            .foregroundStyle(.secondary)
-                                                                        if let emoji = persona.emoji {
-                                                                            Text(emoji)
-                                                                                .font(.system(size: 14))
-                                                                        }
-                                                                        Text(persona.name)
-                                                                            .font(.caption)
-                                                                            .foregroundStyle(.secondary)
+                                                            if let persona = personasById[rule.personaId] {
+                                                                HStack(spacing: 6) {
+                                                                    Text("\u{2192}")
+                                                                        .foregroundStyle(.secondary)
+                                                                    if let emoji = persona.emoji {
+                                                                        Text(emoji)
+                                                                            .font(.system(size: 14))
                                                                     }
-                                                                } else if rule.personaId == "none" {
-                                                                    HStack(spacing: 6) {
-                                                                        Text("\u{2192}")
-                                                                            .foregroundStyle(.secondary)
-                                                                        Text("No persona")
-                                                                            .font(.caption)
-                                                                            .foregroundStyle(.secondary)
-                                                                    }
-                                                                } else {
-                                                                    Text("Unknown persona")
+                                                                    Text(persona.name)
                                                                         .font(.caption)
-                                                                        .foregroundStyle(.red)
-                                                                }
-                                                            }
-
-                                                            Spacer()
-
-                                                            HStack(spacing: 8) {
-                                                                Button {
-                                                                    // Find the app and show picker
-                                                                    if let iconData = rule.appIcon, let icon = NSImage(data: iconData) {
-                                                                        showingAppRulePicker = DetectedApp(
-                                                                            bundleId: rule.appBundleId,
-                                                                            name: rule.appName,
-                                                                            icon: icon
-                                                                        )
-                                                                    }
-                                                                } label: {
-                                                                    Image(systemName: "pencil")
                                                                         .foregroundStyle(.secondary)
                                                                 }
-                                                                .buttonStyle(.plain)
-
-                                                                Button {
-                                                                    if appState.showAppRuleDeleteConfirmation {
-                                                                        appRuleToDelete = rule
-                                                                        showingDeleteAppRuleAlert = true
-                                                                    } else {
-                                                                        appState.deleteAppRule(id: rule.id)
-                                                                    }
-                                                                } label: {
-                                                                    Image(systemName: "trash")
-                                                                        .foregroundStyle(.red)
+                                                            } else if rule.personaId == "none" {
+                                                                HStack(spacing: 6) {
+                                                                    Text("\u{2192}")
+                                                                        .foregroundStyle(.secondary)
+                                                                    Text("No persona")
+                                                                        .font(.caption)
+                                                                        .foregroundStyle(.secondary)
                                                                 }
-                                                                .buttonStyle(.plain)
+                                                            } else {
+                                                                Text("Unknown persona")
+                                                                    .font(.caption)
+                                                                    .foregroundStyle(.red)
                                                             }
                                                         }
-                                                        .padding(.vertical, 4)
-                                                        .padding(.horizontal, 12)
-                                                        .background(
-                                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.3))
-                                                        )
+
+                                                        Spacer()
+
+                                                        HStack(spacing: 8) {
+                                                            Button {
+                                                                // Find the app and show picker
+                                                                if let iconData = rule.appIcon, let icon = NSImage(data: iconData) {
+                                                                    showingAppRulePicker = DetectedApp(
+                                                                        bundleId: rule.appBundleId,
+                                                                        name: rule.appName,
+                                                                        icon: icon
+                                                                    )
+                                                                }
+                                                            } label: {
+                                                                Image(systemName: "pencil")
+                                                                    .foregroundStyle(.secondary)
+                                                            }
+                                                            .buttonStyle(.plain)
+
+                                                            Button {
+                                                                if appState.showAppRuleDeleteConfirmation {
+                                                                    appRuleToDelete = rule
+                                                                    showingDeleteAppRuleAlert = true
+                                                                } else {
+                                                                    appState.deleteAppRule(id: rule.id)
+                                                                }
+                                                            } label: {
+                                                                Image(systemName: "trash")
+                                                                    .foregroundStyle(.red)
+                                                            }
+                                                            .buttonStyle(.plain)
+                                                        }
                                                     }
+                                                    .padding(.vertical, 4)
+                                                    .padding(.horizontal, 12)
+                                                    .background(
+                                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                            .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.3))
+                                                    )
                                                 }
                                             }
-                                            .frame(maxHeight: 300)
                                         }
                                     }
                                 }
@@ -1311,39 +1316,36 @@ struct PersonasTab: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
 
-                                    ScrollView {
-                                        LazyVStack(alignment: .leading, spacing: 8) {
-                                            PersonaRadioRow(
-                                                isSelected: appState.selectedPersonaId == nil,
-                                                emoji: nil,
-                                                name: "No persona",
-                                                description: "Use raw transcription",
-                                                isBuiltIn: false,
-                                                onSelect: { appState.selectedPersonaId = nil }
-                                            )
+                                    VStack(alignment: .leading, spacing: 8) {
+                                        PersonaRadioRow(
+                                            isSelected: appState.selectedPersonaId == nil,
+                                            emoji: nil,
+                                            name: "No persona",
+                                            description: "Use raw transcription",
+                                            isBuiltIn: false,
+                                            onSelect: { appState.selectedPersonaId = nil }
+                                        )
 
-                                            ForEach(appState.allPersonas) { prompt in
-                                                PersonaRadioRow(
-                                                    isSelected: appState.selectedPersonaId == prompt.id,
-                                                    emoji: prompt.emoji,
-                                                    name: prompt.name,
-                                                    description: prompt.instruction,
-                                                    isBuiltIn: prompt.isBuiltIn,
-                                                    onSelect: { appState.selectedPersonaId = prompt.id },
-                                                    onEdit: prompt.isBuiltIn ? nil : { editingPrompt = prompt },
-                                                    onDelete: prompt.isBuiltIn ? nil : {
-                                                        if appState.showPersonaDeleteConfirmation {
-                                                            personaToDelete = prompt
-                                                            showingDeletePersonaAlert = true
-                                                        } else {
-                                                            appState.deletePersona(id: prompt.id)
-                                                        }
+                                        ForEach(appState.allPersonas) { prompt in
+                                            PersonaRadioRow(
+                                                isSelected: appState.selectedPersonaId == prompt.id,
+                                                emoji: prompt.emoji,
+                                                name: prompt.name,
+                                                description: prompt.instruction,
+                                                isBuiltIn: prompt.isBuiltIn,
+                                                onSelect: { appState.selectedPersonaId = prompt.id },
+                                                onEdit: prompt.isBuiltIn ? nil : { editingPrompt = prompt },
+                                                onDelete: prompt.isBuiltIn ? nil : {
+                                                    if appState.showPersonaDeleteConfirmation {
+                                                        personaToDelete = prompt
+                                                        showingDeletePersonaAlert = true
+                                                    } else {
+                                                        appState.deletePersona(id: prompt.id)
                                                     }
-                                                )
-                                            }
+                                                }
+                                            )
                                         }
                                     }
-                                    .frame(maxHeight: 400)
 
                                     Divider()
 
