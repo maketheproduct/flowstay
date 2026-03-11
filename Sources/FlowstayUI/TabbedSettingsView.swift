@@ -372,7 +372,6 @@ struct GeneralSettingsTab: View {
                             }
                         }
                     }
-
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
@@ -477,9 +476,9 @@ private struct SettingsSwitch: View {
 
     var body: some View {
         Toggle("", isOn: $isOn)
-        .labelsHidden()
-        .toggleStyle(SettingsSwitchToggleStyle())
-        .fixedSize()
+            .labelsHidden()
+            .toggleStyle(SettingsSwitchToggleStyle())
+            .fixedSize()
     }
 }
 
@@ -2093,7 +2092,6 @@ struct PermissionsTab: View {
                             }
                         }
                     }
-
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
