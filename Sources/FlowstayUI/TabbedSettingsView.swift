@@ -110,264 +110,364 @@ struct GeneralSettingsTab: View {
             .padding(.top, 20)
             .padding(.bottom, 12)
 
-            Form {
-                // Speech Engine Status
-                Section("Speech Engine") {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    SettingsSectionCard("Speech Engine") {
+                        SettingsCardRow {
                             HStack {
-                                Image(systemName: "waveform.badge.mic")
-                                    .foregroundStyle(Color.flowstayBlue)
-                                Text("NVIDIA Parakeet V3")
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack {
+                                        Image(systemName: "waveform.badge.mic")
+                                            .foregroundStyle(Color.flowstayBlue)
+                                        Text("NVIDIA Parakeet V3")
+                                            .font(.headline)
+                                    }
+                                    Text("High-performance multilingual speech recognition")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    HStack {
+                                        Circle()
+                                            .fill(settingsViewModel.isModelsReady ? Color.green : Color.orange)
+                                            .frame(width: 8, height: 8)
+                                        Text(settingsViewModel.isModelsReady ? "Ready" : "Not ready")
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(settingsViewModel.isModelsReady ? .green : .orange)
+                                    }
+                                    Text("Private and local")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+
+                        if let error = settingsViewModel.engineError {
+                            SettingsCardRow(showsDivider: false) {
+                                HStack {
+                                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+
+                                    Spacer()
+
+                                    Button("Download model") {
+                                        Task {
+                                            await engineCoordinator.preInitializeAllModels()
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                                .padding(.vertical, 4)
+                                .padding(.horizontal, 8)
+                                .background(Color.orange.opacity(0.1))
+                                .cornerRadius(8)
+                            }
+                        }
+                    }
+
+                    SettingsSectionCard("Audio Input") {
+                        SettingsCardRow(showsDivider: false) {
+                            SettingsControlRow(
+                                title: "Microphone",
+                                systemImage: "mic",
+                                description: "The app uses your macOS system default input device. Change it in Sound Settings."
+                            ) {
+                                Button("Open Sound Settings") {
+                                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.sound") {
+                                        NSWorkspace.shared.open(url)
+                                    }
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                            }
+                        }
+                    }
+
+                    SettingsSectionCard("Language") {
+                        SettingsCardRow(showsDivider: false) {
+                            SettingsControlRow(
+                                title: "Language detection",
+                                systemImage: "globe",
+                                description: "Automatically detects among 25 European languages"
+                            ) {
+                                Text("Auto-detect")
                                     .font(.headline)
                             }
-                            Text("High-performance multilingual speech recognition")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
+                    }
 
-                        Spacer()
-
-                        VStack(alignment: .trailing, spacing: 2) {
+                    SettingsSectionCard("Keyboard shortcut") {
+                        SettingsCardRow {
                             HStack {
-                                Circle()
-                                    .fill(settingsViewModel.isModelsReady ? Color.green : Color.orange)
-                                    .frame(width: 8, height: 8)
-                                Text(settingsViewModel.isModelsReady ? "Ready" : "Not ready")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(settingsViewModel.isModelsReady ? .green : .orange)
+                                Text("Toggle transcription")
+                                Spacer()
+                                Text("⌥Space")
+                                    .font(.system(.body, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(Color.gray.opacity(0.15))
+                                    .cornerRadius(6)
                             }
-                            Text("Private and local")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                         }
-                    }
-                    .padding(.vertical, 4)
 
-                    if let error = settingsViewModel.engineError {
-                        HStack {
-                            Label(error, systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-
-                            Spacer()
-
-                            Button("Download model") {
-                                Task {
-                                    await engineCoordinator.preInitializeAllModels()
+                        SettingsCardRow(showsDivider: false) {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Hotkey behavior")
+                                Picker("", selection: $appState.hotkeyPressMode) {
+                                    ForEach(HotkeyPressMode.allCases, id: \.rawValue) { mode in
+                                        Text(mode.displayName).tag(mode)
+                                    }
                                 }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 8)
-                        .background(Color.orange.opacity(0.1))
-                        .cornerRadius(4)
-                    }
-                }
+                                .labelsHidden()
+                                .pickerStyle(.segmented)
 
-                // Audio Input
-                Section("Audio Input") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Label("Microphone", systemImage: "mic")
-                            Spacer()
-                            Button("Open Sound Settings") {
-                                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.sound") {
-                                    NSWorkspace.shared.open(url)
-                                }
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
-
-                        Text("The app uses your macOS system default input device. Change it in Sound Settings.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                // Language
-                Section("Language") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Label("Language detection", systemImage: "globe")
-                            Spacer()
-                            Text("Auto-detect")
-                                .font(.headline)
-                        }
-
-                        Text("Automatically detects among 25 European languages")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                // Keyboard Shortcut
-                Section("Keyboard shortcut") {
-                    HStack {
-                        Text("Toggle transcription")
-                        Spacer()
-                        Text("⌥Space")
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(.primary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(Color.gray.opacity(0.15))
-                            .cornerRadius(6)
-                    }
-                    Picker("Hotkey behavior", selection: $appState.hotkeyPressMode) {
-                        ForEach(HotkeyPressMode.allCases, id: \.rawValue) { mode in
-                            Text(mode.displayName).tag(mode)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    Text({
-                        switch appState.hotkeyPressMode {
-                        case .toggle:
-                            "Press Option+Space to start or stop transcription."
-                        case .hold:
-                            "Hold the Fn key while speaking, then release Fn to stop."
-                        case .both:
-                            "Use Option+Space as toggle, Fn as hold-to-talk."
-                        }
-                    }())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                // Behavior Settings
-                Section("Behavior") {
-                    HStack {
-                        Label("Floating overlay", systemImage: "sparkles")
-                        Spacer()
-                        SettingsSwitch(isOn: Binding(
-                            get: { UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true },
-                            set: { newValue in
-                                UserDefaults.standard.set(newValue, forKey: "showOverlay")
-                            }
-                        ))
-                    }
-                    Text("Shows a Dynamic-Island-style overlay with transcription state and input activity")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    HStack {
-                        Label("Launch at login", systemImage: "power")
-                        Spacer()
-                        SettingsSwitch(isOn: $appState.launchAtLogin)
-                    }
-
-                    HStack {
-                        Label("Auto-paste transcripts", systemImage: "doc.on.clipboard")
-                        Spacer()
-                        SettingsSwitch(isOn: Binding(
-                            get: {
-                                permissionManager.hasAccessibilityPermission && appState.autoPasteEnabled
-                            },
-                            set: { newValue in
-                                if permissionManager.hasAccessibilityPermission {
-                                    appState.autoPasteEnabled = newValue
-                                }
-                            }
-                        ))
-                        .disabled(!permissionManager.hasAccessibilityPermission)
-                    }
-
-                    if appState.autoPasteEnabled, !permissionManager.hasAccessibilityPermission {
-                        Label {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Accessibility permission required")
-                                    .font(.caption.weight(.semibold))
-                                Text("Enable accessibility permission to allow auto-pasting")
+                                Text({
+                                    switch appState.hotkeyPressMode {
+                                    case .toggle:
+                                        "Press Option+Space to start or stop transcription."
+                                    case .hold:
+                                        "Hold the Fn key while speaking, then release Fn to stop."
+                                    case .both:
+                                        "Use Option+Space as toggle, Fn as hold-to-talk."
+                                    }
+                                }())
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                        } icon: {
-                            Image(systemName: "info.circle.fill")
-                                .foregroundStyle(Color.flowstayBlue)
                         }
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Label("Auto-stop timeout", systemImage: "timer")
-                            Spacer()
-                            Picker("", selection: $appState.silenceTimeoutSeconds) {
-                                Text("Unlimited").tag(0.0)
-                                Text("15s").tag(15.0)
-                                Text("30s").tag(30.0)
-                                Text("45s").tag(45.0)
-                                Text("60s").tag(60.0)
-                                Text("90s").tag(90.0)
+                    SettingsSectionCard("Behavior") {
+                        SettingsCardRow {
+                            SettingsControlRow(
+                                title: "Floating overlay",
+                                systemImage: "sparkles",
+                                description: "Shows a Dynamic-Island-style overlay with transcription state and input activity"
+                            ) {
+                                SettingsSwitch(isOn: $appState.showOverlay)
                             }
-                            .pickerStyle(.menu)
-                            .frame(width: 80)
                         }
 
-                        Text("Transcription will stop when no speech detected for this period of time")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        SettingsCardRow {
+                            SettingsControlRow(
+                                title: "Launch at login",
+                                systemImage: "power"
+                            ) {
+                                SettingsSwitch(isOn: $appState.launchAtLogin)
+                            }
+                        }
+
+                        SettingsCardRow {
+                            SettingsControlRow(
+                                title: "Auto-paste transcripts",
+                                systemImage: "doc.on.clipboard"
+                            ) {
+                                SettingsSwitch(isOn: Binding(
+                                    get: {
+                                        permissionManager.hasAccessibilityPermission && appState.autoPasteEnabled
+                                    },
+                                    set: { newValue in
+                                        if permissionManager.hasAccessibilityPermission {
+                                            appState.autoPasteEnabled = newValue
+                                        }
+                                    }
+                                ))
+                                .disabled(!permissionManager.hasAccessibilityPermission)
+                            }
+                        }
+
+                        if appState.autoPasteEnabled, !permissionManager.hasAccessibilityPermission {
+                            SettingsCardRow {
+                                Label {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Accessibility permission required")
+                                            .font(.caption.weight(.semibold))
+                                        Text("Enable accessibility permission to allow auto-pasting")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                } icon: {
+                                    Image(systemName: "info.circle.fill")
+                                        .foregroundStyle(Color.flowstayBlue)
+                                }
+                            }
+                        }
+
+                        SettingsCardRow {
+                            SettingsControlRow(
+                                title: "Auto-stop timeout",
+                                systemImage: "timer",
+                                description: "Transcription will stop when no speech detected for this period of time"
+                            ) {
+                                Picker("", selection: $appState.silenceTimeoutSeconds) {
+                                    Text("Unlimited").tag(0.0)
+                                    Text("15s").tag(15.0)
+                                    Text("30s").tag(30.0)
+                                    Text("45s").tag(45.0)
+                                    Text("60s").tag(60.0)
+                                    Text("90s").tag(90.0)
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(width: 80)
+                            }
+                        }
+
+                        SettingsCardRow(showsDivider: false) {
+                            SettingsControlRow(
+                                title: "Audio Cues",
+                                systemImage: "speaker.wave.2",
+                                description: "Play sounds when recording starts, stops, or finishes"
+                            ) {
+                                SettingsSwitch(isOn: $appState.soundFeedbackEnabled)
+                            }
+                        }
                     }
 
-                    // Sound Feedback
-                    HStack {
-                        Label("Audio Cues", systemImage: "speaker.wave.2")
-                        Spacer()
-                        SettingsSwitch(isOn: $appState.soundFeedbackEnabled)
+                    SettingsSectionCard("Statistics") {
+                        SettingsCardRow(showsDivider: false) {
+                            SettingsControlRow(
+                                title: "Average dictation speed",
+                                systemImage: "chart.line.uptrend.xyaxis",
+                                description: appState.averageWPM > 0 ? "Based on last \(min(settingsViewModel.validTranscriptsCount, 10)) sessions" : nil
+                            ) {
+                                if appState.averageWPM > 0 {
+                                    Text("\(appState.averageWPM) wpm")
+                                        .font(.headline)
+                                        .foregroundStyle(Color.flowstayBlue)
+                                } else {
+                                    Text("Not enough data")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
                     }
-                    Text("Play sounds when recording starts, stops, or finishes")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+
+                    SettingsSectionCard("Updates") {
+                        SettingsCardRow(showsDivider: false) {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text("Flowstay \(updateManager.currentVersion)")
+                                        .font(.headline)
+                                    Text("Check for updates automatically on launch")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+
+                                Spacer()
+
+                                Button("Check for Updates") {
+                                    updateManager.checkForUpdates()
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
+                                .disabled(updateManager.isCheckingForUpdates)
+                            }
+                        }
+                    }
+
                 }
-
-                // Statistics
-                Section("Statistics") {
-                    HStack {
-                        Label("Average dictation speed", systemImage: "chart.line.uptrend.xyaxis")
-                        Spacer()
-                        if appState.averageWPM > 0 {
-                            Text("\(appState.averageWPM) wpm")
-                                .font(.headline)
-                                .foregroundStyle(Color.flowstayBlue)
-                        } else {
-                            Text("Not enough data")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if appState.averageWPM > 0 {
-                        Text("Based on last \(min(settingsViewModel.validTranscriptsCount, 10)) sessions")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                // Updates
-                Section("Updates") {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("Flowstay \(updateManager.currentVersion)")
-                                .font(.headline)
-                            Text("Check for updates automatically on launch")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        Spacer()
-
-                        Button("Check for Updates") {
-                            updateManager.checkForUpdates()
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                        .disabled(updateManager.isCheckingForUpdates)
-                    }
-                }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
             }
-            .formStyle(.grouped)
+        }
+    }
+}
+
+private struct SettingsSectionCard<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.title3.weight(.semibold))
+
+            VStack(alignment: .leading, spacing: 0) {
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(Color.primary.opacity(0.05), lineWidth: 1)
+            )
+        }
+    }
+}
+
+private struct SettingsCardRow<Content: View>: View {
+    let showsDivider: Bool
+    @ViewBuilder let content: Content
+
+    init(showsDivider: Bool = true, @ViewBuilder content: () -> Content) {
+        self.showsDivider = showsDivider
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+
+            if showsDivider {
+                Divider()
+                    .padding(.horizontal, 18)
+            }
+        }
+    }
+}
+
+private struct SettingsControlRow<Trailing: View>: View {
+    let title: String
+    let systemImage: String
+    let description: String?
+    @ViewBuilder let trailing: Trailing
+
+    init(
+        title: String,
+        systemImage: String,
+        description: String? = nil,
+        @ViewBuilder trailing: () -> Trailing
+    ) {
+        self.title = title
+        self.systemImage = systemImage
+        self.description = description
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                Label(title, systemImage: systemImage)
+                Spacer(minLength: 16)
+                trailing
+            }
+
+            if let description {
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
@@ -376,11 +476,211 @@ private struct SettingsSwitch: View {
     @Binding var isOn: Bool
 
     var body: some View {
-        Toggle(isOn: $isOn) {
-            EmptyView()
-        }
+        Toggle("", isOn: $isOn)
         .labelsHidden()
-        .toggleStyle(.switch)
+        .toggleStyle(SettingsSwitchToggleStyle())
+        .fixedSize()
+    }
+}
+
+private struct SettingsSwitchToggleStyle: ToggleStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            guard isEnabled else { return }
+            configuration.isOn.toggle()
+        } label: {
+            HStack(spacing: 8) {
+                configuration.label
+
+                ZStack {
+                    Capsule(style: .continuous)
+                        .fill(trackColor(isOn: configuration.isOn))
+                        .frame(width: 54, height: 32)
+
+                    Circle()
+                        .fill(knobColor)
+                        .frame(width: 24, height: 24)
+                        .overlay(
+                            Circle()
+                                .strokeBorder(knobStrokeColor, lineWidth: 0.5)
+                        )
+                        .shadow(color: Color.black.opacity(colorScheme == .dark ? 0.22 : 0.12), radius: 2, y: 1)
+                        .offset(x: configuration.isOn ? 11 : -11)
+                }
+                .animation(.easeInOut(duration: 0.12), value: configuration.isOn)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(configuration.isOn ? "On" : "Off")
+    }
+
+    private func trackColor(isOn: Bool) -> Color {
+        if isOn {
+            return isEnabled ? .flowstayBlue : Color.flowstayBlue.opacity(0.45)
+        }
+
+        return Color(nsColor: .quaternaryLabelColor).opacity(isEnabled ? 0.34 : 0.2)
+    }
+
+    private var knobColor: Color {
+        Color(nsColor: colorScheme == .dark ? .windowBackgroundColor : .white)
+    }
+
+    private var knobStrokeColor: Color {
+        Color.black.opacity(colorScheme == .dark ? 0.22 : 0.08)
+    }
+}
+
+private struct PersonaRadioRow: View {
+    let isSelected: Bool
+    let emoji: String?
+    let name: String
+    let description: String
+    let isBuiltIn: Bool
+    let onSelect: () -> Void
+    var onEdit: (() -> Void)?
+    var onDelete: (() -> Void)?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Button(action: onSelect) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    .font(.system(size: 16))
+            }
+            .buttonStyle(.plain)
+
+            if let emoji {
+                Text(emoji)
+                    .font(.system(size: 24))
+            } else {
+                Circle()
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(width: 24, height: 24)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text(name)
+                        .font(.subheadline)
+                    if isBuiltIn {
+                        Text("Built-in")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.1))
+                            .clipShape(Capsule())
+                    }
+                }
+                Text(description)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer()
+
+            if let onEdit, let onDelete {
+                HStack(spacing: 8) {
+                    Button(action: onEdit) {
+                        Image(systemName: "pencil")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct NativeConfirmationDialog: View {
+    let title: String
+    let message: String?
+    let confirmTitle: String
+    let cancelTitle: String
+    let isDestructive: Bool
+    let dontAskAgainLabel: String?
+    let dontAskAgain: Binding<Bool>?
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    init(
+        title: String,
+        message: String? = nil,
+        confirmTitle: String,
+        cancelTitle: String = "Cancel",
+        isDestructive: Bool = false,
+        dontAskAgainLabel: String? = nil,
+        dontAskAgain: Binding<Bool>? = nil,
+        onCancel: @escaping () -> Void,
+        onConfirm: @escaping () -> Void
+    ) {
+        self.title = title
+        self.message = message
+        self.confirmTitle = confirmTitle
+        self.cancelTitle = cancelTitle
+        self.isDestructive = isDestructive
+        self.dontAskAgainLabel = dontAskAgainLabel
+        self.dontAskAgain = dontAskAgain
+        self.onCancel = onCancel
+        self.onConfirm = onConfirm
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title)
+                .font(.headline)
+
+            if let message {
+                Text(message)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let dontAskAgain, let dontAskAgainLabel {
+                Divider()
+
+                HStack {
+                    Text(dontAskAgainLabel)
+                        .font(.subheadline)
+                    Spacer()
+                    SettingsSwitch(isOn: dontAskAgain)
+                }
+            }
+
+            HStack(spacing: 12) {
+                Spacer()
+
+                Button(cancelTitle, role: .cancel, action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+
+                if isDestructive {
+                    Button(confirmTitle, role: .destructive, action: onConfirm)
+                        .buttonStyle(.bordered)
+                        .keyboardShortcut(.defaultAction)
+                } else {
+                    Button(confirmTitle, action: onConfirm)
+                        .buttonStyle(.borderedProminent)
+                        .keyboardShortcut(.defaultAction)
+                }
+            }
+        }
+        .padding(24)
+        .frame(width: 380)
+        .interactiveDismissDisabled()
     }
 }
 
@@ -495,15 +795,22 @@ struct CreatePersonaView: View {
         .padding(24)
         .frame(width: 460)
         .interactiveDismissDisabled()
-        .alert("Discard changes?", isPresented: $showingDiscardAlert) {
-            Button("No, go back", role: .cancel) {}
-            Button("Yes, discard", role: .destructive) {
-                if dontAskAgain {
-                    appState.showPersonaDiscardConfirmation = false
+        .sheet(isPresented: $showingDiscardAlert) {
+            NativeConfirmationDialog(
+                title: "Discard changes?",
+                confirmTitle: "Discard",
+                isDestructive: true,
+                dontAskAgainLabel: "Don't ask me again",
+                dontAskAgain: $dontAskAgain,
+                onCancel: { showingDiscardAlert = false },
+                onConfirm: {
+                    if dontAskAgain {
+                        appState.showPersonaDiscardConfirmation = false
+                    }
+                    showingDiscardAlert = false
+                    onDismiss()
                 }
-                onDismiss()
-            }
-            Toggle("Don't ask me again", isOn: $dontAskAgain)
+            )
         }
     }
 
@@ -650,15 +957,22 @@ struct EditPersonaView: View {
         .padding(24)
         .frame(width: 460)
         .interactiveDismissDisabled()
-        .alert("Discard changes?", isPresented: $showingDiscardAlert) {
-            Button("No, go back", role: .cancel) {}
-            Button("Yes, discard", role: .destructive) {
-                if dontAskAgain {
-                    appState.showPersonaDiscardConfirmation = false
+        .sheet(isPresented: $showingDiscardAlert) {
+            NativeConfirmationDialog(
+                title: "Discard changes?",
+                confirmTitle: "Discard",
+                isDestructive: true,
+                dontAskAgainLabel: "Don't ask me again",
+                dontAskAgain: $dontAskAgain,
+                onCancel: { showingDiscardAlert = false },
+                onConfirm: {
+                    if dontAskAgain {
+                        appState.showPersonaDiscardConfirmation = false
+                    }
+                    showingDiscardAlert = false
+                    onDismiss()
                 }
-                onDismiss()
-            }
-            Toggle("Don't ask me again", isOn: $dontAskAgain)
+            )
         }
     }
 
@@ -740,373 +1054,313 @@ struct PersonasTab: View {
             .padding(.top, 20)
             .padding(.bottom, 12)
 
-            Form {
-                // AI Provider Section
-                Section("AI Provider") {
-                    VStack(alignment: .leading, spacing: 16) {
-                        // Provider picker with all options
-                        Picker("Text processing engine", selection: Binding(
-                            get: { appState.selectedAIProviderId ?? AIProviderIdentifier.appleIntelligence.rawValue },
-                            set: { appState.selectedAIProviderId = $0 }
-                        )) {
-                            Text("Apple Intelligence").tag(AIProviderIdentifier.appleIntelligence.rawValue)
-                            Text("OpenRouter").tag(AIProviderIdentifier.openRouter.rawValue)
-                            Text("Claude Code (experimental)").tag(AIProviderIdentifier.claudeCode.rawValue)
-                        }
-                        .pickerStyle(.menu)
-
-                        // Dynamic privacy indicator based on selected provider
-                        HStack(spacing: 6) {
-                            let (icon, color, text) = providerPrivacyInfo
-                            Image(systemName: icon)
-                                .font(.caption)
-                                .foregroundStyle(color)
-                            Text(text)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-
-                        // Provider-specific configuration
-                        switch appState.selectedAIProviderId {
-                        case AIProviderIdentifier.openRouter.rawValue:
-                            openRouterConfigView
-
-                        case AIProviderIdentifier.claudeCode.rawValue:
-                            claudeCodeConfigView
-
-                        default:
-                            appleIntelligenceConfigView
-                        }
-                    }
-                }
-
-                // Enable/Disable Section
-                Section {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Label("Enable personas", systemImage: "wand.and.stars")
-                            Spacer()
-                            SettingsSwitch(isOn: Binding(
-                                get: { appState.personasEnabled && isPersonasAvailable },
-                                set: { newValue in
-                                    if isPersonasAvailable {
-                                        appState.personasEnabled = newValue
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    // AI Provider
+                    SettingsSectionCard("AI Provider") {
+                        SettingsCardRow(showsDivider: false) {
+                            VStack(alignment: .leading, spacing: 16) {
+                                SettingsControlRow(
+                                    title: "Text processing engine",
+                                    systemImage: "cpu"
+                                ) {
+                                    Picker("", selection: Binding(
+                                        get: { appState.selectedAIProviderId ?? AIProviderIdentifier.appleIntelligence.rawValue },
+                                        set: { appState.selectedAIProviderId = $0 }
+                                    )) {
+                                        Text("Apple Intelligence").tag(AIProviderIdentifier.appleIntelligence.rawValue)
+                                        Text("OpenRouter").tag(AIProviderIdentifier.openRouter.rawValue)
+                                        Text("Claude Code (experimental)").tag(AIProviderIdentifier.claudeCode.rawValue)
                                     }
+                                    .labelsHidden()
+                                    .pickerStyle(.menu)
                                 }
-                            ))
-                            .disabled(!isPersonasAvailable)
-                        }
 
-                        if isPersonasAvailable {
-                            Text("Automatically adjust writing style based on context – from professional to casual.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else if appState.selectedAIProviderId == AIProviderIdentifier.openRouter.rawValue, !oauthManager.isConnected {
-                            Label("Connect OpenRouter above to enable personas", systemImage: "info.circle.fill")
-                                .font(.caption)
-                                .foregroundStyle(Color.flowstayBlue)
-                        } else if appState.selectedAIProviderId == AIProviderIdentifier.claudeCode.rawValue {
-                            switch claudeCodeStatus {
-                            case let .notConfigured(reason):
-                                Label(reason, systemImage: "info.circle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(Color.flowstayBlue)
-                            case let .unavailable(reason):
-                                Label(reason, systemImage: "exclamationmark.triangle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                            case .rateLimited:
-                                Label("Claude Code is currently rate limited", systemImage: "exclamationmark.triangle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                            case .available:
-                                EmptyView()
-                            }
-                        } else {
-                            DisclosureGroup {
-                                if #available(macOS 26, *) {
-                                    Text("Apple Intelligence isn't enabled")
-                                        .font(.caption.weight(.semibold))
-                                    Text("Personas require Apple Intelligence to be enabled in System Settings.")
+                                // Dynamic privacy indicator based on selected provider
+                                HStack(spacing: 6) {
+                                    let (icon, color, text) = providerPrivacyInfo
+                                    Image(systemName: icon)
+                                        .font(.caption)
+                                        .foregroundStyle(color)
+                                    Text(text)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
-
-                                    Button("Open Apple Intelligence Settings") {
-                                        SystemSettingsHelper.openAppleIntelligenceSettings()
-                                    }
-                                    .buttonStyle(.bordered)
-                                    .controlSize(.small)
-                                } else {
-                                    Text("Requires macOS 26 with Apple Intelligence")
-                                        .font(.caption.weight(.semibold))
-                                    Text("Personas use Apple Intelligence to adjust your transcript tone. Update to macOS 26 to enable this feature.")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-
-                                    Button("Check for macOS Updates") {
-                                        SystemSettingsHelper.openSoftwareUpdate()
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                    .controlSize(.small)
                                 }
-                            } label: {
-                                Label("More information", systemImage: "info.circle.fill")
-                                    .foregroundStyle(Color.flowstayBlue)
+
+                                // Provider-specific configuration
+                                switch appState.selectedAIProviderId {
+                                case AIProviderIdentifier.openRouter.rawValue:
+                                    openRouterConfigView
+
+                                case AIProviderIdentifier.claudeCode.rawValue:
+                                    claudeCodeConfigView
+
+                                default:
+                                    appleIntelligenceConfigView
+                                }
                             }
                         }
                     }
-                }
 
-                // App-Specific Personas (only show if enabled)
-                if appState.personasEnabled, isPersonasAvailable {
-                    Section {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Text("App-specific personas")
-                                    .font(.subheadline.weight(.medium))
-                                Spacer()
-                            }
-
-                            Toggle("Use different personas for different apps", isOn: $appState.useSmartAppDetection)
-                                .font(.subheadline)
-
-                            if appState.useSmartAppDetection {
-                                Text("Flowstay remembers which persona you prefer for each app")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-
-                                Divider()
-                                    .padding(.vertical, 4)
-
-                                // Add new rule button
-                                Button {
-                                    showingAppSelector = true
-                                } label: {
-                                    Text("Add app rule")
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-
-                                // Existing rules
-                                if !appState.appRules.isEmpty {
-                                    Divider()
-                                        .padding(.vertical, 4)
-
-                                    ScrollView {
-                                        LazyVStack(spacing: 8) {
-                                            ForEach(appState.appRules.sorted(by: { $0.appName < $1.appName })) { rule in
-                                                HStack(spacing: 12) {
-                                                    if let iconData = rule.appIcon,
-                                                       let nsImage = NSImage(data: iconData)
-                                                    {
-                                                        Image(nsImage: nsImage)
-                                                            .resizable()
-                                                            .frame(width: 32, height: 32)
-                                                    } else {
-                                                        Image(systemName: "app.fill")
-                                                            .font(.system(size: 24))
-                                                            .foregroundStyle(.secondary)
-                                                    }
-
-                                                    VStack(alignment: .leading, spacing: 2) {
-                                                        Text(rule.appName)
-                                                            .font(.subheadline.weight(.medium))
-
-                                                        if let persona = appState.allPersonas.first(where: { $0.id == rule.personaId }) {
-                                                            HStack(spacing: 6) {
-                                                                Text("→")
-                                                                    .foregroundStyle(.secondary)
-                                                                if let emoji = persona.emoji {
-                                                                    Text(emoji)
-                                                                        .font(.system(size: 14))
-                                                                }
-                                                                Text(persona.name)
-                                                                    .font(.caption)
-                                                                    .foregroundStyle(.secondary)
-                                                            }
-                                                        } else if rule.personaId == "none" {
-                                                            HStack(spacing: 6) {
-                                                                Text("→")
-                                                                    .foregroundStyle(.secondary)
-                                                                Text("No persona")
-                                                                    .font(.caption)
-                                                                    .foregroundStyle(.secondary)
-                                                            }
-                                                        } else {
-                                                            Text("Unknown persona")
-                                                                .font(.caption)
-                                                                .foregroundStyle(.red)
-                                                        }
-                                                    }
-
-                                                    Spacer()
-
-                                                    HStack(spacing: 8) {
-                                                        Button {
-                                                            // Find the app and show picker
-                                                            if let iconData = rule.appIcon, let icon = NSImage(data: iconData) {
-                                                                showingAppRulePicker = DetectedApp(
-                                                                    bundleId: rule.appBundleId,
-                                                                    name: rule.appName,
-                                                                    icon: icon
-                                                                )
-                                                            }
-                                                        } label: {
-                                                            Image(systemName: "pencil")
-                                                                .foregroundStyle(.secondary)
-                                                        }
-                                                        .buttonStyle(.plain)
-
-                                                        Button {
-                                                            if appState.showAppRuleDeleteConfirmation {
-                                                                appRuleToDelete = rule
-                                                                showingDeleteAppRuleAlert = true
-                                                            } else {
-                                                                appState.deleteAppRule(id: rule.id)
-                                                            }
-                                                        } label: {
-                                                            Image(systemName: "trash")
-                                                                .foregroundStyle(.red)
-                                                        }
-                                                        .buttonStyle(.plain)
-                                                    }
-                                                }
-                                                .padding(.vertical, 4)
+                    // Personas
+                    SettingsSectionCard("Personas") {
+                        SettingsCardRow(showsDivider: false) {
+                            VStack(alignment: .leading, spacing: 12) {
+                                SettingsControlRow(
+                                    title: "Enable personas",
+                                    systemImage: "wand.and.stars"
+                                ) {
+                                    SettingsSwitch(isOn: Binding(
+                                        get: { appState.personasEnabled && isPersonasAvailable },
+                                        set: { newValue in
+                                            if isPersonasAvailable {
+                                                appState.personasEnabled = newValue
                                             }
                                         }
-                                    }
-                                    .frame(maxHeight: 300)
+                                    ))
+                                    .disabled(!isPersonasAvailable)
                                 }
-                            }
-                        }
-                    }
 
-                    // Default Persona Library
-                    Section {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                Text("Default persona")
-                                    .font(.subheadline.weight(.medium))
-                                Spacer()
-                            }
-
-                            ScrollView {
-                                LazyVStack(alignment: .leading, spacing: 8) {
-                                    // No persona option
-                                    HStack(spacing: 12) {
-                                        Button {
-                                            appState.selectedPersonaId = nil
-                                        } label: {
-                                            Image(systemName: appState.selectedPersonaId == nil ? "largecircle.fill.circle" : "circle")
-                                                .foregroundStyle(appState.selectedPersonaId == nil ? Color.accentColor : .secondary)
-                                                .font(.system(size: 16))
-                                        }
-                                        .buttonStyle(.plain)
-
-                                        Circle()
-                                            .fill(Color.gray.opacity(0.3))
-                                            .frame(width: 24, height: 24)
-
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text("No persona")
-                                                .font(.subheadline)
-                                            Text("Use raw transcription")
+                                if isPersonasAvailable {
+                                    Text("Automatically adjust writing style based on context – from professional to casual.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else if appState.selectedAIProviderId == AIProviderIdentifier.openRouter.rawValue, !oauthManager.isConnected {
+                                    Label("Connect OpenRouter above to enable personas", systemImage: "info.circle.fill")
+                                        .font(.caption)
+                                        .foregroundStyle(Color.flowstayBlue)
+                                } else if appState.selectedAIProviderId == AIProviderIdentifier.claudeCode.rawValue {
+                                    switch claudeCodeStatus {
+                                    case let .notConfigured(reason):
+                                        Label(reason, systemImage: "info.circle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(Color.flowstayBlue)
+                                    case let .unavailable(reason):
+                                        Label(reason, systemImage: "exclamationmark.triangle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                    case .rateLimited:
+                                        Label("Claude Code is currently rate limited", systemImage: "exclamationmark.triangle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                    case .available:
+                                        EmptyView()
+                                    }
+                                } else {
+                                    DisclosureGroup {
+                                        if #available(macOS 26, *) {
+                                            Text("Apple Intelligence isn't enabled")
+                                                .font(.caption.weight(.semibold))
+                                            Text("Personas require Apple Intelligence to be enabled in System Settings.")
                                                 .font(.caption)
                                                 .foregroundStyle(.secondary)
+
+                                            Button("Open Apple Intelligence Settings") {
+                                                SystemSettingsHelper.openAppleIntelligenceSettings()
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .controlSize(.small)
+                                        } else {
+                                            Text("Requires macOS 26 with Apple Intelligence")
+                                                .font(.caption.weight(.semibold))
+                                            Text("Personas use Apple Intelligence to adjust your transcript tone. Update to macOS 26 to enable this feature.")
+                                                .font(.caption)
+                                                .foregroundStyle(.secondary)
+
+                                            Button("Check for macOS Updates") {
+                                                SystemSettingsHelper.openSoftwareUpdate()
+                                            }
+                                            .buttonStyle(.borderedProminent)
+                                            .controlSize(.small)
                                         }
-
-                                        Spacer()
+                                    } label: {
+                                        Label("More information", systemImage: "info.circle.fill")
+                                            .foregroundStyle(Color.flowstayBlue)
                                     }
-                                    .padding(.vertical, 4)
+                                }
+                            }
+                        }
+                    }
 
-                                    ForEach(appState.allPersonas) { prompt in
-                                        HStack(spacing: 12) {
-                                            // Radio button selection
-                                            Button {
-                                                appState.selectedPersonaId = prompt.id
-                                            } label: {
-                                                Image(systemName: appState.selectedPersonaId == prompt.id ? "largecircle.fill.circle" : "circle")
-                                                    .foregroundStyle(appState.selectedPersonaId == prompt.id ? Color.accentColor : .secondary)
-                                                    .font(.system(size: 16))
-                                            }
-                                            .buttonStyle(.plain)
+                    // App-Specific Personas (only show if enabled)
+                    if appState.personasEnabled, isPersonasAvailable {
+                        SettingsSectionCard("App-Specific Personas") {
+                            SettingsCardRow(showsDivider: appState.useSmartAppDetection) {
+                                SettingsControlRow(
+                                    title: "Smart app detection",
+                                    systemImage: "apps.iphone",
+                                    description: "Flowstay remembers which persona you prefer for each app"
+                                ) {
+                                    SettingsSwitch(isOn: $appState.useSmartAppDetection)
+                                }
+                            }
 
-                                            // Emoji as visual identifier
-                                            if let emoji = prompt.emoji {
-                                                Text(emoji)
-                                                    .font(.system(size: 24))
-                                            } else {
-                                                Circle()
-                                                    .fill(Color.gray.opacity(0.3))
-                                                    .frame(width: 24, height: 24)
-                                            }
+                            if appState.useSmartAppDetection {
+                                SettingsCardRow(showsDivider: false) {
+                                    VStack(alignment: .leading, spacing: 12) {
+                                        // Add new rule button
+                                        Button {
+                                            showingAppSelector = true
+                                        } label: {
+                                            Text("Add app rule")
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .controlSize(.small)
 
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                HStack {
-                                                    Text(prompt.name)
-                                                        .font(.subheadline)
-                                                    if prompt.isBuiltIn {
-                                                        Text("Built-in")
-                                                            .font(.caption2)
-                                                            .foregroundStyle(.secondary)
-                                                            .padding(.horizontal, 6)
-                                                            .padding(.vertical, 2)
-                                                            .background(Color.secondary.opacity(0.1))
-                                                            .clipShape(Capsule())
+                                        // Existing rules
+                                        if !appState.appRules.isEmpty {
+                                            ScrollView {
+                                                LazyVStack(spacing: 8) {
+                                                    ForEach(appState.appRules.sorted(by: { $0.appName < $1.appName })) { rule in
+                                                        HStack(spacing: 12) {
+                                                            if let iconData = rule.appIcon,
+                                                               let nsImage = NSImage(data: iconData)
+                                                            {
+                                                                Image(nsImage: nsImage)
+                                                                    .resizable()
+                                                                    .frame(width: 32, height: 32)
+                                                            } else {
+                                                                Image(systemName: "app.fill")
+                                                                    .font(.system(size: 24))
+                                                                    .foregroundStyle(.secondary)
+                                                            }
+
+                                                            VStack(alignment: .leading, spacing: 2) {
+                                                                Text(rule.appName)
+                                                                    .font(.subheadline.weight(.medium))
+
+                                                                if let persona = appState.allPersonas.first(where: { $0.id == rule.personaId }) {
+                                                                    HStack(spacing: 6) {
+                                                                        Text("\u{2192}")
+                                                                            .foregroundStyle(.secondary)
+                                                                        if let emoji = persona.emoji {
+                                                                            Text(emoji)
+                                                                                .font(.system(size: 14))
+                                                                        }
+                                                                        Text(persona.name)
+                                                                            .font(.caption)
+                                                                            .foregroundStyle(.secondary)
+                                                                    }
+                                                                } else if rule.personaId == "none" {
+                                                                    HStack(spacing: 6) {
+                                                                        Text("\u{2192}")
+                                                                            .foregroundStyle(.secondary)
+                                                                        Text("No persona")
+                                                                            .font(.caption)
+                                                                            .foregroundStyle(.secondary)
+                                                                    }
+                                                                } else {
+                                                                    Text("Unknown persona")
+                                                                        .font(.caption)
+                                                                        .foregroundStyle(.red)
+                                                                }
+                                                            }
+
+                                                            Spacer()
+
+                                                            HStack(spacing: 8) {
+                                                                Button {
+                                                                    // Find the app and show picker
+                                                                    if let iconData = rule.appIcon, let icon = NSImage(data: iconData) {
+                                                                        showingAppRulePicker = DetectedApp(
+                                                                            bundleId: rule.appBundleId,
+                                                                            name: rule.appName,
+                                                                            icon: icon
+                                                                        )
+                                                                    }
+                                                                } label: {
+                                                                    Image(systemName: "pencil")
+                                                                        .foregroundStyle(.secondary)
+                                                                }
+                                                                .buttonStyle(.plain)
+
+                                                                Button {
+                                                                    if appState.showAppRuleDeleteConfirmation {
+                                                                        appRuleToDelete = rule
+                                                                        showingDeleteAppRuleAlert = true
+                                                                    } else {
+                                                                        appState.deleteAppRule(id: rule.id)
+                                                                    }
+                                                                } label: {
+                                                                    Image(systemName: "trash")
+                                                                        .foregroundStyle(.red)
+                                                                }
+                                                                .buttonStyle(.plain)
+                                                            }
+                                                        }
+                                                        .padding(.vertical, 4)
+                                                        .padding(.horizontal, 12)
+                                                        .background(
+                                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.3))
+                                                        )
                                                     }
                                                 }
-                                                Text(prompt.instruction)
-                                                    .font(.caption)
-                                                    .foregroundStyle(.secondary)
-                                                    .lineLimit(2)
                                             }
+                                            .frame(maxHeight: 300)
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
-                                            Spacer()
+                        // Default Persona
+                        SettingsSectionCard("Default Persona") {
+                            SettingsCardRow(showsDivider: false) {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    Text("Choose the default persona used when no app-specific rule applies.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
 
-                                            if !prompt.isBuiltIn {
-                                                HStack(spacing: 8) {
-                                                    Button {
-                                                        editingPrompt = prompt
-                                                    } label: {
-                                                        Image(systemName: "pencil")
-                                                            .foregroundStyle(.secondary)
-                                                    }
-                                                    .buttonStyle(.plain)
+                                    ScrollView {
+                                        LazyVStack(alignment: .leading, spacing: 8) {
+                                            PersonaRadioRow(
+                                                isSelected: appState.selectedPersonaId == nil,
+                                                emoji: nil,
+                                                name: "No persona",
+                                                description: "Use raw transcription",
+                                                isBuiltIn: false,
+                                                onSelect: { appState.selectedPersonaId = nil }
+                                            )
 
-                                                    Button {
+                                            ForEach(appState.allPersonas) { prompt in
+                                                PersonaRadioRow(
+                                                    isSelected: appState.selectedPersonaId == prompt.id,
+                                                    emoji: prompt.emoji,
+                                                    name: prompt.name,
+                                                    description: prompt.instruction,
+                                                    isBuiltIn: prompt.isBuiltIn,
+                                                    onSelect: { appState.selectedPersonaId = prompt.id },
+                                                    onEdit: prompt.isBuiltIn ? nil : { editingPrompt = prompt },
+                                                    onDelete: prompt.isBuiltIn ? nil : {
                                                         if appState.showPersonaDeleteConfirmation {
                                                             personaToDelete = prompt
                                                             showingDeletePersonaAlert = true
                                                         } else {
                                                             appState.deletePersona(id: prompt.id)
                                                         }
-                                                    } label: {
-                                                        Image(systemName: "trash")
-                                                            .foregroundStyle(.red)
                                                     }
-                                                    .buttonStyle(.plain)
-                                                }
+                                                )
                                             }
                                         }
-                                        .padding(.vertical, 4)
                                     }
+                                    .frame(maxHeight: 400)
+
+                                    Divider()
+
+                                    Button("Add custom persona") {
+                                        showingCreatePersona = true
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
                                 }
                             }
-                            .frame(maxHeight: 400)
                         }
-                    }
-
-                    // Add Persona Button
-                    Section {
-                        Button("Add custom persona") {
-                            showingCreatePersona = true
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
             }
-            .formStyle(.grouped)
         }
         .sheet(isPresented: $showingCreatePersona) {
             CreatePersonaView(
@@ -1138,33 +1392,57 @@ struct PersonasTab: View {
                 onDismiss: { showingAppRulePicker = nil }
             )
         }
-        .alert("Delete \(personaToDelete?.name ?? "persona")?", isPresented: $showingDeletePersonaAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) {
-                if let persona = personaToDelete {
-                    if dontAskPersonaDeleteAgain {
-                        appState.showPersonaDeleteConfirmation = false
+        .sheet(isPresented: $showingDeletePersonaAlert, onDismiss: {
+            personaToDelete = nil
+        }) {
+            NativeConfirmationDialog(
+                title: "Delete \(personaToDelete?.name ?? "persona")?",
+                message: "This action cannot be undone",
+                confirmTitle: "Delete",
+                isDestructive: true,
+                dontAskAgainLabel: "Don't ask me again",
+                dontAskAgain: $dontAskPersonaDeleteAgain,
+                onCancel: {
+                    showingDeletePersonaAlert = false
+                    personaToDelete = nil
+                },
+                onConfirm: {
+                    if let persona = personaToDelete {
+                        if dontAskPersonaDeleteAgain {
+                            appState.showPersonaDeleteConfirmation = false
+                        }
+                        appState.deletePersona(id: persona.id)
                     }
-                    appState.deletePersona(id: persona.id)
+                    showingDeletePersonaAlert = false
+                    personaToDelete = nil
                 }
-            }
-            Toggle("Don't ask me again", isOn: $dontAskPersonaDeleteAgain)
-        } message: {
-            Text("This action cannot be undone")
+            )
         }
-        .alert("Delete app rule?", isPresented: $showingDeleteAppRuleAlert) {
-            Button("Cancel", role: .cancel) {}
-            Button("Delete", role: .destructive) {
-                if let rule = appRuleToDelete {
-                    if dontAskAppRuleDeleteAgain {
-                        appState.showAppRuleDeleteConfirmation = false
+        .sheet(isPresented: $showingDeleteAppRuleAlert, onDismiss: {
+            appRuleToDelete = nil
+        }) {
+            NativeConfirmationDialog(
+                title: "Delete app rule?",
+                message: "This action cannot be undone",
+                confirmTitle: "Delete",
+                isDestructive: true,
+                dontAskAgainLabel: "Don't ask me again",
+                dontAskAgain: $dontAskAppRuleDeleteAgain,
+                onCancel: {
+                    showingDeleteAppRuleAlert = false
+                    appRuleToDelete = nil
+                },
+                onConfirm: {
+                    if let rule = appRuleToDelete {
+                        if dontAskAppRuleDeleteAgain {
+                            appState.showAppRuleDeleteConfirmation = false
+                        }
+                        appState.deleteAppRule(id: rule.id)
                     }
-                    appState.deleteAppRule(id: rule.id)
+                    showingDeleteAppRuleAlert = false
+                    appRuleToDelete = nil
                 }
-            }
-            Toggle("Don't ask me again", isOn: $dontAskAppRuleDeleteAgain)
-        } message: {
-            Text("This action cannot be undone")
+            )
         }
         .onReceive(NotificationCenter.default.publisher(for: Notification.Name("FlowstayWillTerminate"))) { _ in
             // Dismiss all open modals before app quits
@@ -1720,67 +1998,106 @@ struct PermissionsTab: View {
             .padding(.top, 20)
             .padding(.bottom, 12)
 
-            Form {
-                Section("Required permissions") {
-                    PermissionRow(
-                        title: "Microphone",
-                        icon: "mic",
-                        isGranted: permissionManager.hasMicrophonePermission
-                    ) {
-                        Task {
-                            await permissionManager.requestMicrophonePermission()
-                        }
-                    }
-                }
-
-                Section("Optional permissions") {
-                    PermissionRow(
-                        title: "Accessibility",
-                        icon: "accessibility",
-                        isGranted: permissionManager.hasAccessibilityPermission,
-                        helpText: "Required for auto-paste functionality"
-                    ) {
-                        Task {
-                            await permissionManager.requestAccessibilityPermission()
-                        }
-                    }
-
-                    PermissionRow(
-                        title: "Notifications",
-                        icon: "bell.badge",
-                        isGranted: notificationPermissionGranted,
-                        helpText: "Get notified when transcription completes or models download"
-                    ) {
-                        Task {
-                            let granted = await NotificationManager.shared.requestPermissions()
-                            await MainActor.run {
-                                notificationPermissionGranted = granted
+            ScrollView {
+                VStack(alignment: .leading, spacing: 24) {
+                    SettingsSectionCard("Required Permissions") {
+                        SettingsCardRow(showsDivider: false) {
+                            SettingsControlRow(
+                                title: "Microphone",
+                                systemImage: "mic"
+                            ) {
+                                if permissionManager.hasMicrophonePermission {
+                                    Label("Granted", systemImage: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                        .font(.caption)
+                                } else {
+                                    Button("Grant") {
+                                        Task {
+                                            await permissionManager.requestMicrophonePermission()
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
                             }
                         }
                     }
-                }
 
-                Section {
-                    if permissionManager.criticalPermissionsGranted {
-                        Label {
-                            Text("All required permissions granted")
-                                .font(.caption)
-                        } icon: {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundStyle(.green)
+                    SettingsSectionCard("Optional Permissions") {
+                        SettingsCardRow {
+                            SettingsControlRow(
+                                title: "Accessibility",
+                                systemImage: "accessibility",
+                                description: "Required for auto-paste functionality"
+                            ) {
+                                if permissionManager.hasAccessibilityPermission {
+                                    Label("Granted", systemImage: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                        .font(.caption)
+                                } else {
+                                    Button("Grant") {
+                                        Task {
+                                            await permissionManager.requestAccessibilityPermission()
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
                         }
-                    } else {
-                        Label {
-                            Text("Grant required permissions to enable transcription")
-                                .font(.caption)
-                        } icon: {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundStyle(.orange)
+
+                        SettingsCardRow(showsDivider: false) {
+                            SettingsControlRow(
+                                title: "Notifications",
+                                systemImage: "bell.badge",
+                                description: "Get notified when transcription completes or models download"
+                            ) {
+                                if notificationPermissionGranted {
+                                    Label("Granted", systemImage: "checkmark.circle.fill")
+                                        .foregroundStyle(.green)
+                                        .font(.caption)
+                                } else {
+                                    Button("Grant") {
+                                        Task {
+                                            let granted = await NotificationManager.shared.requestPermissions()
+                                            await MainActor.run {
+                                                notificationPermissionGranted = granted
+                                            }
+                                        }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
                         }
                     }
+
+                    SettingsSectionCard("Status") {
+                        SettingsCardRow(showsDivider: false) {
+                            if permissionManager.criticalPermissionsGranted {
+                                Label {
+                                    Text("All required permissions granted")
+                                        .font(.caption)
+                                } icon: {
+                                    Image(systemName: "checkmark.seal.fill")
+                                        .foregroundStyle(.green)
+                                }
+                            } else {
+                                Label {
+                                    Text("Grant required permissions to enable transcription")
+                                        .font(.caption)
+                                } icon: {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                        }
+                    }
+
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
             }
-            .formStyle(.grouped)
         }
         .onAppear {
             // Check initial notification permission status
@@ -1791,41 +2108,6 @@ struct PermissionsTab: View {
                 }
             }
         }
-    }
-}
-
-struct PermissionRow: View {
-    let title: String
-    let icon: String
-    let isGranted: Bool
-    var helpText: String?
-    let requestAction: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(title, systemImage: icon)
-                Spacer()
-                if isGranted {
-                    Label("Granted", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                        .font(.caption)
-                } else {
-                    Button("Grant") {
-                        requestAction()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-            }
-
-            if let helpText {
-                Text(helpText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.vertical, 4)
     }
 }
 
