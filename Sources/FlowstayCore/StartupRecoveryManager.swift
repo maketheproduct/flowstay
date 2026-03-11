@@ -2,6 +2,23 @@ import Darwin
 import Foundation
 import os
 
+// MARK: - Shared Utilities
+
+enum QuarantineHelper {
+    /// Reads the `com.apple.quarantine` extended attribute from the given path.
+    static func attribute(at path: String) -> String? {
+        let name = "com.apple.quarantine"
+        let size = getxattr(path, name, nil, 0, 0, 0)
+        guard size > 0 else { return nil }
+
+        var buffer = [CChar](repeating: 0, count: size + 1)
+        let result = getxattr(path, name, &buffer, size, 0, 0)
+        guard result >= 0 else { return nil }
+        let bytes = buffer.prefix(Int(size)).map { UInt8(bitPattern: $0) }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+}
+
 public enum StartupStage: String, Sendable {
     case launched
     case fontsRegistered
@@ -118,7 +135,7 @@ public final class StartupRecoveryManager {
 
         let bundlePath = bundle.bundlePath
         let translocated = bundlePath.contains("/AppTranslocation/")
-        let quarantineValue = quarantineAttribute(at: bundlePath) ?? "none"
+        let quarantineValue = QuarantineHelper.attribute(at: bundlePath) ?? "none"
         let message =
             "begin launch build=\(buildIdentifier) recovery=\(context.recoveryMode) crashLoopCount=\(crashLoopCount) previousStage=\(previousStageRawValue ?? "none") bundlePath=\(bundlePath) translocated=\(translocated) quarantine=\(quarantineValue)"
 
@@ -192,17 +209,5 @@ public final class StartupRecoveryManager {
             return nil
         }
         return directoryURL.appendingPathComponent("startup-diagnostics.log")
-    }
-
-    private func quarantineAttribute(at path: String) -> String? {
-        let name = "com.apple.quarantine"
-        let size = getxattr(path, name, nil, 0, 0, 0)
-        guard size > 0 else { return nil }
-
-        var buffer = [CChar](repeating: 0, count: size + 1)
-        let result = getxattr(path, name, &buffer, size, 0, 0)
-        guard result >= 0 else { return nil }
-        let bytes = buffer.prefix(Int(size)).map { UInt8(bitPattern: $0) }
-        return String(decoding: bytes, as: UTF8.self)
     }
 }

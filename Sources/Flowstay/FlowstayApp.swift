@@ -74,8 +74,10 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         let startupContext = StartupRecoveryManager.shared.beginLaunch(version: shortVersion, build: buildVersion)
         if startupContext.recoveryMode {
+            let stage = startupContext.previousIncompleteStage?.rawValue ?? "unknown"
+            let build = startupContext.buildIdentifier
             logger.fault(
-                "[AppDelegate] Startup recovery enabled for build \(startupContext.buildIdentifier, privacy: .public) after incomplete stage \(startupContext.previousIncompleteStage?.rawValue ?? "unknown", privacy: .public)"
+                "[AppDelegate] Startup recovery enabled for build \(build, privacy: .public) after incomplete stage \(stage, privacy: .public)"
             )
         }
 
@@ -1032,51 +1034,6 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         logger.info("[AppDelegate] Settings window opened")
     }
 
-    // MARK: - Recovery Window
-
-    func openRecoveryWindow() {
-        openRecoveryWindow(autoPresented: false)
-    }
-
-    private func openRecoveryWindow(autoPresented: Bool) {
-        closePopover()
-
-        if let existingWindow = recoveryWindow, existingWindow.isVisible {
-            NSApp.activate(ignoringOtherApps: true)
-            existingWindow.makeKeyAndOrderFront(nil)
-            return
-        }
-
-        let recoveryView = RecoveryTroubleshootingView(
-            appState: appState,
-            autoPresented: autoPresented,
-            onContinue: { [weak self] in
-                self?.recoveryWindow?.close()
-            }
-        )
-
-        let hostingController = NSHostingController(rootView: recoveryView)
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "Flowstay Troubleshooting"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        window.backgroundColor = .windowBackgroundColor
-        window.setContentSize(NSSize(width: 760, height: 640))
-        let delegate = RecoveryWindowDelegate { [weak self] in
-            self?.recoveryWindow = nil
-            self?.recoveryWindowDelegate = nil
-        }
-        recoveryWindowDelegate = delegate
-        window.delegate = delegate
-        window.center()
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-
-        recoveryWindow = window
-        logger.info("[AppDelegate] Recovery troubleshooting window opened")
-    }
-
     // MARK: - Onboarding Window
 
     func openOnboardingWindow() {
@@ -1155,6 +1112,53 @@ private final class RecoveryWindowDelegate: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         _ = notification
         onWindowWillClose?()
+    }
+}
+
+// MARK: - Recovery Window
+
+extension FlowstayAppDelegate {
+    func openRecoveryWindow() {
+        openRecoveryWindow(autoPresented: false)
+    }
+
+    func openRecoveryWindow(autoPresented: Bool) {
+        closePopover()
+
+        if let existingWindow = recoveryWindow, existingWindow.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            existingWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let recoveryView = RecoveryTroubleshootingView(
+            appState: appState,
+            autoPresented: autoPresented,
+            onContinue: { [weak self] in
+                self?.recoveryWindow?.close()
+            }
+        )
+
+        let hostingController = NSHostingController(rootView: recoveryView)
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Flowstay Troubleshooting"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .windowBackgroundColor
+        window.setContentSize(NSSize(width: 760, height: 640))
+        let delegate = RecoveryWindowDelegate { [weak self] in
+            self?.recoveryWindow = nil
+            self?.recoveryWindowDelegate = nil
+        }
+        recoveryWindowDelegate = delegate
+        window.delegate = delegate
+        window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+
+        recoveryWindow = window
+        logger.info("[AppDelegate] Recovery troubleshooting window opened")
     }
 }
 
