@@ -136,8 +136,11 @@ public final class StartupRecoveryManager {
         let bundlePath = bundle.bundlePath
         let translocated = bundlePath.contains("/AppTranslocation/")
         let quarantineValue = QuarantineHelper.attribute(at: bundlePath) ?? "none"
-        let message =
-            "begin launch build=\(buildIdentifier) recovery=\(context.recoveryMode) crashLoopCount=\(crashLoopCount) previousStage=\(previousStageRawValue ?? "none") bundlePath=\(bundlePath) translocated=\(translocated) quarantine=\(quarantineValue)"
+        let previousStage = previousStageRawValue ?? "none"
+        let message = "begin launch build=\(buildIdentifier)"
+            + " recovery=\(context.recoveryMode) crashLoopCount=\(crashLoopCount)"
+            + " previousStage=\(previousStage) bundlePath=\(bundlePath)"
+            + " translocated=\(translocated) quarantine=\(quarantineValue)"
 
         logger.log(level: context.recoveryMode ? .fault : .info, "[StartupRecovery] \(message, privacy: .public)")
         appendDiagnostic(message)
