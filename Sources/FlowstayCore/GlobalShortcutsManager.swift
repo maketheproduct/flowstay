@@ -5,6 +5,7 @@ import KeyboardShortcuts
 /// Extension for KeyboardShortcuts names
 public extension KeyboardShortcuts.Name {
     static let toggleDictation = Self("toggleDictation", default: .init(.space, modifiers: [.option]))
+    static let holdToTalk = Self("holdToTalk")
 }
 
 /// Manages global keyboard shortcuts for Flowstay.

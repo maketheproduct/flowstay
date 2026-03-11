@@ -28,6 +28,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
     private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
+    private var recoveryWindow: NSWindow?
+    private var recoveryWindowDelegate: RecoveryWindowDelegate?
 
     // MARK: - State (owned by delegate, not SwiftUI)
 
@@ -68,12 +70,22 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     func applicationDidFinishLaunching(_ notification: Notification) {
         logger.info("[AppDelegate] applicationDidFinishLaunching - initializing app")
         logStartupMetric("app launch", at: launchTimestamp)
+        let buildVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
+        let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        let startupContext = StartupRecoveryManager.shared.beginLaunch(version: shortVersion, build: buildVersion)
+        if startupContext.recoveryMode {
+            logger.fault(
+                "[AppDelegate] Startup recovery enabled for build \(startupContext.buildIdentifier, privacy: .public) after incomplete stage \(startupContext.previousIncompleteStage?.rawValue ?? "unknown", privacy: .public)"
+            )
+        }
 
         // Register custom fonts
         FontLoader.registerFonts()
+        StartupRecoveryManager.shared.markStage(.fontsRegistered)
 
         // Initialize all state objects (previously in SwiftUI App.init)
         initializeState()
+        StartupRecoveryManager.shared.markStage(.stateInitialized)
 
         // Setup UI
         setupStatusItem()
@@ -81,6 +93,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         setupOverlayObserver()
         setupModelReadinessObserver()
         MenuBarHelper.delegate = self
+        StartupRecoveryManager.shared.markStage(.uiReady)
 
         // Register for URL events (OAuth callbacks)
         registerForURLEvents()
@@ -117,6 +130,12 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 if deletedCount > 0 {
                     logger.info("[AppDelegate] History cleanup: deleted \(deletedCount) records older than \(retentionDays) days")
                 }
+            }
+
+            StartupRecoveryManager.shared.markStartupComplete()
+
+            if startupContext.recoveryMode {
+                openRecoveryWindow(autoPresented: true)
             }
         }
     }
@@ -1013,6 +1032,51 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         logger.info("[AppDelegate] Settings window opened")
     }
 
+    // MARK: - Recovery Window
+
+    func openRecoveryWindow() {
+        openRecoveryWindow(autoPresented: false)
+    }
+
+    private func openRecoveryWindow(autoPresented: Bool) {
+        closePopover()
+
+        if let existingWindow = recoveryWindow, existingWindow.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            existingWindow.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let recoveryView = RecoveryTroubleshootingView(
+            appState: appState,
+            autoPresented: autoPresented,
+            onContinue: { [weak self] in
+                self?.recoveryWindow?.close()
+            }
+        )
+
+        let hostingController = NSHostingController(rootView: recoveryView)
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Flowstay Troubleshooting"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .windowBackgroundColor
+        window.setContentSize(NSSize(width: 760, height: 640))
+        let delegate = RecoveryWindowDelegate { [weak self] in
+            self?.recoveryWindow = nil
+            self?.recoveryWindowDelegate = nil
+        }
+        recoveryWindowDelegate = delegate
+        window.delegate = delegate
+        window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+
+        recoveryWindow = window
+        logger.info("[AppDelegate] Recovery troubleshooting window opened")
+    }
+
     // MARK: - Onboarding Window
 
     func openOnboardingWindow() {
@@ -1078,6 +1142,19 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
         // Note: OpenRouter OAuth now uses localhost:3000 callback server instead of URL scheme
         // This handler remains for potential future URL scheme integrations
+    }
+}
+
+private final class RecoveryWindowDelegate: NSObject, NSWindowDelegate {
+    private let onWindowWillClose: (() -> Void)?
+
+    init(onWindowWillClose: (() -> Void)? = nil) {
+        self.onWindowWillClose = onWindowWillClose
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        _ = notification
+        onWindowWillClose?()
     }
 }
 
