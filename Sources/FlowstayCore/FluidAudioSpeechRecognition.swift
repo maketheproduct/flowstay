@@ -15,6 +15,13 @@ public enum FluidAudioError: Error {
 /// FluidAudio-based Speech Recognition using Parakeet TDT ASR
 /// Provides fast, accurate, local speech recognition with better real-time performance than Whisper
 public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
+    private struct StopFinalizationDiagnostics {
+        let stopRequestedAt: Date
+        let timeSinceLastSpeechAtStop: TimeInterval?
+        let chosenDelay: TimeInterval
+        let finalChunkSampleCount: Int
+    }
+
     @Published public var isRecording = false
     @Published public var transcription = ""
     @Published public var audioLevel: Float = 0.0
@@ -25,6 +32,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
     /// Thread-safe completion tracking using OSAllocatedUnfairLock
     private let completionLock = OSAllocatedUnfairLock()
+    private let logger = Logger(subsystem: "com.flowstay.app", category: "FluidAudioSpeechRecognition")
     /// SAFETY: nonisolated(unsafe) because access is protected by completionLock
     private nonisolated(unsafe) var hasCalledCompletion = false
 
@@ -60,6 +68,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     private let speechHangoverDuration: TimeInterval = 1.2 // Keep speech "active" briefly between syllables
     private let waveformNoiseFloorRms: Float = 0.0035
     private let trailingBufferDelay: TimeInterval = 0.4 // Allow tap buffers to flush before stop
+    private let requiredSpeechTailGap: TimeInterval = 0.65
+    private let maximumTrailingBufferDelay: TimeInterval = 0.9
 
     /// Silence detection timer
     private var silenceDetectionTimer: Timer?
@@ -243,13 +253,24 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
     /// Pre-warm audio hardware and converter pipeline so first hotkey press
     /// doesn't pay the full cold-start penalty.
-    public func prewarmRecordingPipeline() async {
+    ///
+    /// Returns true when prewarm completed successfully. Returns false when
+    /// prewarm is skipped (e.g. microphone not authorized) or fails.
+    @discardableResult
+    public func prewarmRecordingPipeline() async -> Bool {
         guard asrManager != nil else {
-            return
+            return false
         }
 
         guard !isRecording else {
-            return
+            return false
+        }
+
+        // Never touch AVAudioEngine input hardware until microphone permission
+        // has already been granted by explicit user action.
+        guard AVAudioApplication.shared.recordPermission == .granted else {
+            print("[FluidAudioSpeechRecognition] Pre-warm skipped: microphone permission not granted")
+            return false
         }
 
         print("[FluidAudioSpeechRecognition] Pre-warming recording pipeline...")
@@ -265,7 +286,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             interleaved: false
         ) else {
             print("[FluidAudioSpeechRecognition] Pre-warm skipped: failed to create output format")
-            return
+            return false
         }
 
         guard let warmProxy = FluidAudioTapProxy(
@@ -274,7 +295,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             outputFormat: outputFormat
         ) else {
             print("[FluidAudioSpeechRecognition] Pre-warm skipped: failed to create tap proxy")
-            return
+            return false
         }
 
         inputNode.removeTap(onBus: 0)
@@ -291,13 +312,18 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             try warmEngine.start()
             try? await Task.sleep(nanoseconds: 40_000_000) // brief warm-up run
             print("[FluidAudioSpeechRecognition] ✅ Recording pipeline pre-warmed")
+            inputNode.removeTap(onBus: 0)
+            if warmEngine.isRunning {
+                warmEngine.stop()
+            }
+            return true
         } catch {
             print("[FluidAudioSpeechRecognition] ⚠️ Pre-warm failed: \(error.localizedDescription)")
-        }
-
-        inputNode.removeTap(onBus: 0)
-        if warmEngine.isRunning {
-            warmEngine.stop()
+            inputNode.removeTap(onBus: 0)
+            if warmEngine.isRunning {
+                warmEngine.stop()
+            }
+            return false
         }
     }
 
@@ -426,6 +452,16 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         print("[FluidAudioSpeechRecognition] Stopping recording...")
 
         userInitiatedStop = true
+        let stopRequestedAt = Date()
+        let stopDecision = RecordingStopFinalizationPolicy.resolve(
+            RecordingStopFinalizationInput(
+                stopRequestedAt: stopRequestedAt,
+                lastSpeechDetectedAt: lastSpeechDetectedAt,
+                minimumFlushDelay: trailingBufferDelay,
+                requiredSpeechTailGap: requiredSpeechTailGap,
+                maximumFlushDelay: maximumTrailingBufferDelay
+            )
+        )
 
         // Mark as stopped for UI immediately
         isRecording = false
@@ -441,10 +477,16 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // Audio tap has internal buffers that need time to be delivered
         // Stopping engine immediately would lose trailing audio
         Task { @MainActor in
-            // Step 1: Wait for audio tap to deliver remaining buffers
-            // 400ms provides margin for slower systems and Bluetooth audio latency
+            let lastSpeechDescription = stopDecision.timeSinceLastSpeechAtStop.map {
+                String(format: "%.3f", $0)
+            } ?? "none"
+            logger.debug(
+                "[FluidAudio] stop requested at \(stopRequestedAt.timeIntervalSince1970, privacy: .public); last speech delta: \(lastSpeechDescription, privacy: .public)s; chosen delay: \(String(format: "%.3f", stopDecision.delayBeforeTapRemoval), privacy: .public)s"
+            )
+
+            // Step 1: Wait for audio tap to deliver remaining buffers and preserve short trailing speech.
             print("[FluidAudioSpeechRecognition] Waiting for audio tap buffer delivery...")
-            try? await Task.sleep(nanoseconds: UInt64(trailingBufferDelay * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(stopDecision.delayBeforeTapRemoval * 1_000_000_000))
 
             // Step 2: Remove the tap first to stop new audio from being processed
             // This is safer than stopping the engine immediately
@@ -459,6 +501,9 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                 await proxy.waitForPendingTasks()
             }
 
+            let finalChunkSampleCount = await self.chunkedRecordingManager.getCurrentBufferSize()
+            await self.chunkedRecordingManager.forceChunkBoundary()
+
             // Step 4: NOW clean up audio engine safely (all audio has been processed)
             print("[FluidAudioSpeechRecognition] Cleaning up audio engine...")
             if let engine = self.audioEngine, engine.isRunning {
@@ -470,7 +515,14 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             // The system automatically manages audio resources when the engine stops
 
             // Step 5: Finalize chunked recording and get complete transcription
-            await self.finalizeChunkedTranscription()
+            await self.finalizeChunkedTranscription(
+                diagnostics: StopFinalizationDiagnostics(
+                    stopRequestedAt: stopRequestedAt,
+                    timeSinceLastSpeechAtStop: stopDecision.timeSinceLastSpeechAtStop,
+                    chosenDelay: stopDecision.delayBeforeTapRemoval,
+                    finalChunkSampleCount: finalChunkSampleCount
+                )
+            )
         }
     }
 
@@ -512,7 +564,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     }
 
     /// Finalize chunked recording and get complete transcription
-    private func finalizeChunkedTranscription() async {
+    private func finalizeChunkedTranscription(diagnostics: StopFinalizationDiagnostics? = nil) async {
         print("[FluidAudioSpeechRecognition] Finalizing chunked transcription...")
 
         // Get final transcription and metrics from chunked recording manager
@@ -543,6 +595,14 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         }
 
         if shouldCallCompletion {
+            if let diagnostics {
+                let lastSpeechDescription = diagnostics.timeSinceLastSpeechAtStop.map {
+                    String(format: "%.3f", $0)
+                } ?? "none"
+                logger.debug(
+                    "[FluidAudio] finalized stop requested at \(diagnostics.stopRequestedAt.timeIntervalSince1970, privacy: .public); last speech delta: \(lastSpeechDescription, privacy: .public)s; delay: \(String(format: "%.3f", diagnostics.chosenDelay), privacy: .public)s; final chunk samples: \(diagnostics.finalChunkSampleCount, privacy: .public); final transcript length: \(trimmedText.count, privacy: .public)"
+                )
+            }
             onTranscriptionComplete?(trimmedText, metrics.totalDuration)
         }
     }

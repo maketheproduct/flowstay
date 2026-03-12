@@ -239,6 +239,91 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(appState.hotkeyPressMode, .both)
     }
 
+    func testHotkeyPressModeStoredValueMappings() {
+        XCTAssertEqual(HotkeyPressMode.fromStoredValue("toggle"), .toggle)
+        XCTAssertEqual(HotkeyPressMode.fromStoredValue("push"), .toggle)
+        XCTAssertEqual(HotkeyPressMode.fromStoredValue("hold"), .hold)
+        XCTAssertEqual(HotkeyPressMode.fromStoredValue("holdToTalk"), .hold)
+        XCTAssertEqual(HotkeyPressMode.fromStoredValue("both"), .both)
+        XCTAssertEqual(HotkeyPressMode.fromStoredValue(nil), .both)
+        XCTAssertEqual(HotkeyPressMode.fromStoredValue("unknown"), .both)
+    }
+
+    func testHotkeyPressModeInitialModePolicyForFreshInstall() {
+        XCTAssertEqual(
+            HotkeyPressMode.initialMode(storedValue: nil, hasExistingOnboardingState: false),
+            .both
+        )
+    }
+
+    func testHotkeyPressModeInitialModePolicyForLegacyInstallWithoutStoredMode() {
+        XCTAssertEqual(
+            HotkeyPressMode.initialMode(storedValue: nil, hasExistingOnboardingState: true),
+            .both
+        )
+    }
+
+    func testHotkeyPressModePersistsInUserDefaults() {
+        let defaults = UserDefaults.standard
+        let key = "hotkeyPressMode"
+        let originalValue = defaults.object(forKey: key)
+
+        defer {
+            if let originalValue {
+                defaults.set(originalValue, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
+        defaults.set(HotkeyPressMode.both.rawValue, forKey: key)
+        XCTAssertEqual(
+            HotkeyPressMode.fromStoredValue(defaults.string(forKey: key)),
+            .both
+        )
+
+        appState.hotkeyPressMode = .hold
+        XCTAssertEqual(defaults.string(forKey: key), HotkeyPressMode.hold.rawValue)
+    }
+
+    func testHoldToTalkInputSourceCanBeSet() {
+        appState.holdToTalkInputSource = .functionKey
+        XCTAssertEqual(appState.holdToTalkInputSource, .functionKey)
+
+        appState.holdToTalkInputSource = .alternativeShortcut
+        XCTAssertEqual(appState.holdToTalkInputSource, .alternativeShortcut)
+    }
+
+    func testHoldToTalkInputSourceStoredValueMappings() {
+        XCTAssertEqual(HoldToTalkInputSource.fromStoredValue("functionKey"), .functionKey)
+        XCTAssertEqual(HoldToTalkInputSource.fromStoredValue("alternativeShortcut"), .alternativeShortcut)
+        XCTAssertEqual(HoldToTalkInputSource.fromStoredValue(nil), .functionKey)
+        XCTAssertEqual(HoldToTalkInputSource.fromStoredValue("unknown"), .functionKey)
+    }
+
+    func testHoldToTalkInputSourcePersistsInUserDefaults() {
+        let defaults = UserDefaults.standard
+        let key = "holdToTalkInputSource"
+        let originalValue = defaults.object(forKey: key)
+
+        defer {
+            if let originalValue {
+                defaults.set(originalValue, forKey: key)
+            } else {
+                defaults.removeObject(forKey: key)
+            }
+        }
+
+        defaults.set(HoldToTalkInputSource.alternativeShortcut.rawValue, forKey: key)
+        XCTAssertEqual(
+            HoldToTalkInputSource.fromStoredValue(defaults.string(forKey: key)),
+            .alternativeShortcut
+        )
+
+        appState.holdToTalkInputSource = .functionKey
+        XCTAssertEqual(defaults.string(forKey: key), HoldToTalkInputSource.functionKey.rawValue)
+    }
+
     func testClaudeCodeModelSelectionCanBeSet() {
         appState.selectedClaudeCodeModelId = "haiku"
         XCTAssertEqual(appState.selectedClaudeCodeModelId, "haiku")

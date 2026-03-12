@@ -12,13 +12,17 @@ public extension KeyboardShortcuts.Name {
 /// Dispatches user-intent events and feedback events to app-level policy handlers.
 @MainActor
 public class GlobalShortcutsManager {
+    public static var holdInputSource: HoldToTalkInputSource = .functionKey
     private static var _isInitialized = false
 
     /// Task that listens for keyboard shortcut events.
-    private static var shortcutListenerTask: Task<Void, Never>?
+    private static var toggleShortcutListenerTask: Task<Void, Never>?
+    private static var holdShortcutListenerTask: Task<Void, Never>?
     private static var functionKeyGlobalMonitor: Any?
     private static var functionKeyLocalMonitor: Any?
     private static var isFunctionKeyPressed = false
+    private static var isHoldShortcutPressed = false
+    private static var isHoldInputPressed = false
 
     /// Debounce interval to prevent rapid double-triggers.
     private static let debounceInterval: TimeInterval = 0.3
@@ -29,6 +33,11 @@ public class GlobalShortcutsManager {
     /// Check if global shortcuts have been initialized.
     public static var isInitialized: Bool {
         _isInitialized
+    }
+
+    public static func setHoldInputSource(_ source: HoldToTalkInputSource) {
+        holdInputSource = source
+        updateHoldInputState()
     }
 
     /// Initialize global shortcuts and dispatch callbacks.
@@ -49,6 +58,7 @@ public class GlobalShortcutsManager {
         feedbackHandler = onFeedback
 
         _ = KeyboardShortcuts.Name.toggleDictation
+        _ = KeyboardShortcuts.Name.holdToTalk
         setupGlobalHotkey()
         _isInitialized = true
 
@@ -59,10 +69,14 @@ public class GlobalShortcutsManager {
         print("[GlobalShortcutsManager] Setting up global hotkey...")
 
         // Cancel any existing listener task.
-        shortcutListenerTask?.cancel()
-        shortcutListenerTask = nil
+        toggleShortcutListenerTask?.cancel()
+        toggleShortcutListenerTask = nil
+        holdShortcutListenerTask?.cancel()
+        holdShortcutListenerTask = nil
         removeFunctionKeyMonitors()
         isFunctionKeyPressed = false
+        isHoldShortcutPressed = false
+        isHoldInputPressed = false
 
         // Set default only when user has not customized a shortcut.
         if KeyboardShortcuts.getShortcut(for: .toggleDictation) == nil {
@@ -81,16 +95,35 @@ public class GlobalShortcutsManager {
             feedbackHandler?(.error)
         }
 
-        print("[GlobalShortcutsManager] Starting async event listener...")
+        print("[GlobalShortcutsManager] Starting async event listeners...")
+        startToggleShortcutListener()
+        startHoldShortcutListener()
 
-        shortcutListenerTask = Task { @MainActor in
+        functionKeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
+            Task { @MainActor in
+                handleFunctionKeyFlagsChanged(event)
+            }
+        }
+
+        functionKeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            Task { @MainActor in
+                handleFunctionKeyFlagsChanged(event)
+            }
+            return event
+        }
+
+        print("[GlobalShortcutsManager] Global hotkey listener registered")
+    }
+
+    private static func startToggleShortcutListener() {
+        toggleShortcutListenerTask = Task { @MainActor in
             var lastHotkeyTime: Date?
 
-            print("[GlobalShortcutsManager] Async listener task started")
+            print("[GlobalShortcutsManager] Toggle shortcut listener task started")
 
             for await event in KeyboardShortcuts.events(for: .toggleDictation) {
                 if Task.isCancelled {
-                    print("[GlobalShortcutsManager] Listener task cancelled, exiting")
+                    print("[GlobalShortcutsManager] Toggle shortcut listener cancelled, exiting")
                     break
                 }
 
@@ -114,23 +147,53 @@ public class GlobalShortcutsManager {
                 }
             }
 
-            print("[GlobalShortcutsManager] Async listener task ended")
+            print("[GlobalShortcutsManager] Toggle shortcut listener task ended")
         }
+    }
 
-        functionKeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
-            Task { @MainActor in
-                handleFunctionKeyFlagsChanged(event)
+    private static func startHoldShortcutListener() {
+        holdShortcutListenerTask = Task { @MainActor in
+            print("[GlobalShortcutsManager] Hold shortcut listener task started")
+
+            for await event in KeyboardShortcuts.events(for: .holdToTalk) {
+                if Task.isCancelled {
+                    print("[GlobalShortcutsManager] Hold shortcut listener cancelled, exiting")
+                    break
+                }
+
+                if holdShortcutConflictsWithToggle() {
+                    if isHoldShortcutPressed {
+                        isHoldShortcutPressed = false
+                        updateHoldInputState()
+                    }
+                    continue
+                }
+
+                switch event {
+                case .keyDown:
+                    guard !isHoldShortcutPressed else { continue }
+                    isHoldShortcutPressed = true
+                    print("[GlobalShortcutsManager] HOLD SHORTCUT KEY DOWN")
+                    updateHoldInputState()
+                case .keyUp:
+                    guard isHoldShortcutPressed else { continue }
+                    isHoldShortcutPressed = false
+                    print("[GlobalShortcutsManager] HOLD SHORTCUT KEY UP")
+                    updateHoldInputState()
+                }
             }
-        }
 
-        functionKeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-            Task { @MainActor in
-                handleFunctionKeyFlagsChanged(event)
-            }
-            return event
+            print("[GlobalShortcutsManager] Hold shortcut listener task ended")
         }
+    }
 
-        print("[GlobalShortcutsManager] Global hotkey listener registered")
+    private static func holdShortcutConflictsWithToggle() -> Bool {
+        guard let holdShortcut = KeyboardShortcuts.getShortcut(for: .holdToTalk),
+              let toggleShortcut = KeyboardShortcuts.getShortcut(for: .toggleDictation)
+        else {
+            return false
+        }
+        return holdShortcut == toggleShortcut
     }
 
     private static func handleFunctionKeyFlagsChanged(_ event: NSEvent) {
@@ -138,11 +201,24 @@ public class GlobalShortcutsManager {
         guard functionPressedNow != isFunctionKeyPressed else { return }
 
         isFunctionKeyPressed = functionPressedNow
-        if functionPressedNow {
-            print("[GlobalShortcutsManager] FUNCTION KEY DOWN")
+        updateHoldInputState()
+    }
+
+    private static func updateHoldInputState() {
+        let holdPressedNow: Bool = switch holdInputSource {
+        case .functionKey:
+            isFunctionKeyPressed
+        case .alternativeShortcut:
+            isHoldShortcutPressed
+        }
+        guard holdPressedNow != isHoldInputPressed else { return }
+
+        isHoldInputPressed = holdPressedNow
+        if holdPressedNow {
+            print("[GlobalShortcutsManager] HOLD INPUT DOWN")
             hotkeyEventHandler?(.functionKeyDown)
         } else {
-            print("[GlobalShortcutsManager] FUNCTION KEY UP")
+            print("[GlobalShortcutsManager] HOLD INPUT UP")
             hotkeyEventHandler?(.functionKeyUp)
         }
     }
@@ -161,10 +237,14 @@ public class GlobalShortcutsManager {
     /// Stop listening for keyboard shortcuts (cleanup).
     public static func deinitialize() {
         print("[GlobalShortcutsManager] Deinitializing...")
-        shortcutListenerTask?.cancel()
-        shortcutListenerTask = nil
+        toggleShortcutListenerTask?.cancel()
+        toggleShortcutListenerTask = nil
+        holdShortcutListenerTask?.cancel()
+        holdShortcutListenerTask = nil
         removeFunctionKeyMonitors()
         isFunctionKeyPressed = false
+        isHoldShortcutPressed = false
+        isHoldInputPressed = false
         hotkeyEventHandler = nil
         feedbackHandler = nil
         _isInitialized = false

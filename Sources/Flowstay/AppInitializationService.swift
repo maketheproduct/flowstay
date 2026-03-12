@@ -2,7 +2,6 @@ import AppKit
 import FlowstayCore
 import Foundation
 import SwiftUI
-import UserNotifications
 
 /// Service responsible for handling app initialization tasks
 /// including onboarding flow and first-time setup
@@ -16,6 +15,7 @@ class AppInitializationService: ObservableObject {
     private var shortcutFeedbackCallback: ((HotkeyFeedbackEvent) -> Void)?
     private var hotkeyListenerReadyCallback: (() -> Void)?
     private var prewarmTask: Task<Void, Never>?
+    private var deferredOnboardingResumeTask: Task<Void, Never>?
 
     @Published var hasInitialized = false
 
@@ -58,6 +58,8 @@ class AppInitializationService: ObservableObject {
             }
             prewarmTask?.cancel()
             prewarmTask = nil
+            deferredOnboardingResumeTask?.cancel()
+            deferredOnboardingResumeTask = nil
             print("[AppInitializationService] Cleaned up resources")
         }
     }
@@ -85,8 +87,25 @@ class AppInitializationService: ObservableObject {
 
         // Check if model is downloaded
         let modelDownloaded = engineCoordinator.isModelDownloaded()
+        if modelDownloaded {
+            UserDefaults.standard.onboardingDeferredForModelDownload = false
+        }
         let needsPermissions = !permissionManager.criticalPermissionsGranted
         let needsModel = !modelDownloaded
+        let onboardingDeferredForModelDownload = UserDefaults.standard.onboardingDeferredForModelDownload
+        let onboardingCompleted = UserDefaults.standard.hasCompletedOnboarding
+
+        if onboardingDeferredForModelDownload, needsModel, !needsPermissions {
+            print("[AppInitializationService] Onboarding deferred while model downloads in background")
+            startDeferredOnboardingResumeIfNeeded()
+            return
+        }
+
+        if !onboardingCompleted {
+            print("[AppInitializationService] Onboarding incomplete - showing onboarding")
+            await showOnboardingWindow()
+            return
+        }
 
         // If requirements are missing, trigger onboarding
         if needsPermissions || needsModel {
@@ -102,8 +121,7 @@ class AppInitializationService: ObservableObject {
         print("[AppInitializationService] Starting app initialization...")
         StartupRecoveryManager.shared.markStage(.appInitializationStarted)
 
-        // Only check notification permission status (don't request - that happens in onboarding)
-        _ = await NotificationManager.shared.checkPermissionStatus()
+        let isFirstLaunch = !UserDefaults.standard.hasCompletedOnboarding
 
         // Check permissions first before attempting directory creation
         await permissionManager.checkPermissions()
@@ -124,19 +142,28 @@ class AppInitializationService: ObservableObject {
 
         // Check if model is downloaded
         let modelDownloaded = engineCoordinator.isModelDownloaded()
+        if modelDownloaded {
+            UserDefaults.standard.onboardingDeferredForModelDownload = false
+        }
 
         // Check if this is first launch or permissions are missing
-        let isFirstLaunch = !UserDefaults.standard.hasCompletedOnboarding
         let needsPermissions = !permissionManager.criticalPermissionsGranted
         let needsModel = !modelDownloaded
+        let onboardingDeferredForModelDownload = UserDefaults.standard.onboardingDeferredForModelDownload
+        let shouldDeferOnboarding = onboardingDeferredForModelDownload && needsModel && !needsPermissions
 
         print("[AppInitializationService] Launch status:")
         print("  - First launch: \(isFirstLaunch)")
         print("  - Needs permissions: \(needsPermissions)")
         print("  - Needs model: \(needsModel)")
+        print("  - Deferred for model download: \(onboardingDeferredForModelDownload)")
+
+        if shouldDeferOnboarding {
+            startDeferredOnboardingResumeIfNeeded()
+        }
 
         // Show onboarding if it's first launch, permissions are missing, or model isn't downloaded
-        if isFirstLaunch || needsPermissions || needsModel {
+        if !shouldDeferOnboarding, (isFirstLaunch || needsPermissions || needsModel) {
             print("[AppInitializationService] Triggering onboarding window...")
             await showOnboardingWindow()
         }
@@ -183,6 +210,7 @@ class AppInitializationService: ObservableObject {
 
         StartupRecoveryManager.shared.markStage(.appInitializationCompleted)
         hasInitialized = true
+        StartupRecoveryManager.shared.markStage(.appInitializationCompleted)
         print("[AppInitializationService] App initialization complete")
     }
 
@@ -200,6 +228,13 @@ class AppInitializationService: ObservableObject {
     private func initializeGlobalShortcutsIfNeeded() {
         guard permissionManager.criticalPermissionsGranted, UserDefaults.standard.hasCompletedOnboarding else {
             print("[AppInitializationService] Skipping global shortcuts - requirements not met")
+            return
+        }
+
+        if StartupRecoveryManager.shared.shouldSkipGlobalShortcuts {
+            print("[AppInitializationService] Recovery mode active - skipping global shortcuts for this launch")
+            StartupRecoveryManager.shared.markSubsystemSkipped(.globalShortcuts)
+            StartupRecoveryManager.shared.appendDiagnostic("skipping global shortcuts during recovery launch")
             return
         }
 
@@ -249,6 +284,29 @@ class AppInitializationService: ObservableObject {
             await MainActor.run {
                 self.prewarmTask = nil
             }
+        }
+    }
+
+    private func startDeferredOnboardingResumeIfNeeded() {
+        guard deferredOnboardingResumeTask == nil else {
+            print("[AppInitializationService] Deferred onboarding resume task already running")
+            return
+        }
+
+        print("[AppInitializationService] Starting deferred model preparation task...")
+        deferredOnboardingResumeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+
+            await engineCoordinator.preInitializeAllModels(prewarmBehavior: .modelsOnly)
+
+            let modelDownloaded = engineCoordinator.isModelDownloaded()
+            UserDefaults.standard.onboardingDeferredForModelDownload = false
+            deferredOnboardingResumeTask = nil
+
+            guard !UserDefaults.standard.hasCompletedOnboarding else { return }
+
+            print("[AppInitializationService] Deferred model task finished (downloaded: \(modelDownloaded)) - reopening onboarding")
+            await showOnboardingWindow()
         }
     }
 

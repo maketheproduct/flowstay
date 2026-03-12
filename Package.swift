@@ -33,10 +33,12 @@ let package = Package(
                 "KeyboardShortcuts",
             ],
             path: "Sources/Flowstay",
-            exclude: ["Info.plist"],
+            exclude: [
+                "Info.plist",
+                "Resources/Flowstay.icon",
+            ],
             resources: [
                 .copy("AppIcon.icns"),
-                .copy("Resources/Flowstay.icon"),
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -83,6 +85,7 @@ let package = Package(
             name: "FlowstayPermissions",
             dependencies: [
                 "FlowstayCore",
+                "KeyboardShortcuts",
             ],
             path: "Sources/FlowstayPermissions",
             swiftSettings: [
@@ -93,8 +96,16 @@ let package = Package(
 
         .testTarget(
             name: "FlowstayCoreTests",
-            dependencies: ["FlowstayCore"],
+            dependencies: ["FlowstayCore", "KeyboardShortcuts"],
             path: "Tests/FlowstayCoreTests",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+            ]
+        ),
+        .testTarget(
+            name: "FlowstayPermissionsTests",
+            dependencies: ["FlowstayPermissions"],
+            path: "Tests/FlowstayPermissionsTests",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
             ]

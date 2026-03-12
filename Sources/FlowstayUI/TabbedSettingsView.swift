@@ -92,6 +92,9 @@ struct GeneralSettingsTab: View {
     let engineCoordinator: EngineCoordinatorViewModel // Keep reference for actions, but don't observe
     @ObservedObject var permissionManager: PermissionManager
     @StateObject private var updateManager = UpdateManager.shared
+    @State private var hotkeyValidationMessage: String?
+    @State private var lastValidToggleShortcut: KeyboardShortcuts.Shortcut?
+    @State private var lastValidHoldShortcut: KeyboardShortcuts.Shortcut?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -113,7 +116,7 @@ struct GeneralSettingsTab: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     SettingsSectionCard("Speech Engine") {
-                        SettingsCardRow(showsDivider: settingsViewModel.engineError != nil) {
+                        SettingsCardRow {
                             HStack {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
@@ -206,13 +209,44 @@ struct GeneralSettingsTab: View {
                             HStack {
                                 Text("Toggle transcription")
                                 Spacer()
-                                Text("⌥Space")
-                                    .font(.system(.body, design: .monospaced))
-                                    .foregroundStyle(.primary)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.gray.opacity(0.15))
-                                    .cornerRadius(6)
+                                KeyboardShortcuts.Recorder(
+                                    for: .toggleDictation,
+                                    onChange: handleToggleShortcutChange
+                                )
+                            }
+                        }
+
+                        SettingsCardRow {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Hold input")
+                                Picker("", selection: $appState.holdToTalkInputSource) {
+                                    ForEach(HoldToTalkInputSource.allCases, id: \.rawValue) { source in
+                                        Text(source.displayName).tag(source)
+                                    }
+                                }
+                                .labelsHidden()
+                                .pickerStyle(.segmented)
+                            }
+                        }
+
+                        if appState.holdToTalkInputSource == .alternativeShortcut {
+                            SettingsCardRow {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    HStack {
+                                        Text("Hold-to-talk shortcut")
+                                        Spacer()
+                                        KeyboardShortcuts.Recorder(
+                                            for: .holdToTalk,
+                                            onChange: handleHoldShortcutChange
+                                        )
+                                    }
+
+                                    if let hotkeyValidationMessage {
+                                        Label(hotkeyValidationMessage, systemImage: "exclamationmark.triangle.fill")
+                                            .font(.caption)
+                                            .foregroundStyle(.orange)
+                                    }
+                                }
                             }
                         }
 
@@ -227,16 +261,7 @@ struct GeneralSettingsTab: View {
                                 .labelsHidden()
                                 .pickerStyle(.segmented)
 
-                                Text({
-                                    switch appState.hotkeyPressMode {
-                                    case .toggle:
-                                        "Press Option+Space to start or stop transcription."
-                                    case .hold:
-                                        "Hold the Fn key while speaking, then release Fn to stop."
-                                    case .both:
-                                        "Use Option+Space as toggle, Fn as hold-to-talk."
-                                    }
-                                }())
+                                Text(hotkeyBehaviorDescription)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -356,9 +381,9 @@ struct GeneralSettingsTab: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text("Flowstay \(updateManager.currentVersion)")
                                         .font(.headline)
-                                    Text("Check for updates automatically on launch")
+                                    Text(updateManager.unavailableReason ?? "Check for updates automatically on launch")
                                         .font(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(updateManager.isUpdaterAvailable ? Color.secondary : Color.orange)
                                 }
 
                                 Spacer()
@@ -368,7 +393,28 @@ struct GeneralSettingsTab: View {
                                 }
                                 .buttonStyle(.bordered)
                                 .controlSize(.small)
-                                .disabled(updateManager.isCheckingForUpdates)
+                                .disabled(updateManager.isCheckingForUpdates || !updateManager.isUpdaterAvailable)
+                            }
+                        }
+                    }
+
+                    if recoverySnapshot.isDegradedLaunch {
+                        SettingsSectionCard("Startup Help") {
+                            SettingsCardRow(showsDivider: false) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Label("Flowstay had trouble starting on its last launch.", systemImage: "wrench.and.screwdriver.fill")
+                                        .foregroundStyle(.orange)
+
+                                    Text("Flowstay opened in a safer mode for this launch, so some features may be temporarily limited until you review the suggested fixes.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+
+                                    Button("Fix Startup Issues") {
+                                        MenuBarHelper.openRecovery()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                }
                             }
                         }
                     }
@@ -376,7 +422,99 @@ struct GeneralSettingsTab: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
             }
+            .onAppear(perform: syncHotkeyState)
+            .onChange(of: appState.holdToTalkInputSource) { _, _ in
+                syncHotkeyState()
+            }
         }
+    }
+
+    private var recoverySnapshot: StartupRecoverySnapshot {
+        StartupRecoveryManager.shared.snapshot
+    }
+
+    private var toggleShortcutDescription: String {
+        shortcutDescription(KeyboardShortcuts.getShortcut(for: .toggleDictation)) ?? "⌥Space"
+    }
+
+    private var holdShortcutDescription: String? {
+        shortcutDescription(KeyboardShortcuts.getShortcut(for: .holdToTalk))
+    }
+
+    private var hotkeyBehaviorDescription: String {
+        switch appState.hotkeyPressMode {
+        case .toggle:
+            "Press \(toggleShortcutDescription) to start or stop transcription."
+        case .hold:
+            if appState.holdToTalkInputSource == .functionKey {
+                "Hold the Fn key while speaking, then release Fn to stop."
+            } else if let holdShortcutDescription {
+                "Hold \(holdShortcutDescription) while speaking, then release to stop."
+            } else {
+                "Set a hold-to-talk shortcut below, then hold it while speaking."
+            }
+        case .both:
+            if appState.holdToTalkInputSource == .functionKey {
+                "Use \(toggleShortcutDescription) as toggle, Fn as hold-to-talk."
+            } else if let holdShortcutDescription {
+                "Use \(toggleShortcutDescription) as toggle. Hold \(holdShortcutDescription) for hold-to-talk."
+            } else {
+                "Use \(toggleShortcutDescription) as toggle. Set a hold-to-talk shortcut below for hold-to-talk."
+            }
+        }
+    }
+
+    private func shortcutDescription(_ shortcut: KeyboardShortcuts.Shortcut?) -> String? {
+        guard let shortcut else { return nil }
+        return shortcut.description
+    }
+
+    private func syncHotkeyState() {
+        lastValidToggleShortcut = KeyboardShortcuts.getShortcut(for: .toggleDictation)
+        let configuredHoldShortcut = KeyboardShortcuts.getShortcut(for: .holdToTalk)
+        if appState.holdToTalkInputSource == .alternativeShortcut,
+           let configuredHoldShortcut,
+           configuredHoldShortcut == lastValidToggleShortcut
+        {
+            KeyboardShortcuts.setShortcut(nil, for: .holdToTalk)
+            lastValidHoldShortcut = nil
+            hotkeyValidationMessage = "Hold shortcut cannot match toggle shortcut. The hold shortcut was cleared."
+            return
+        }
+
+        lastValidHoldShortcut = configuredHoldShortcut
+        hotkeyValidationMessage = nil
+    }
+
+    private func handleToggleShortcutChange(_ newShortcut: KeyboardShortcuts.Shortcut?) {
+        if appState.holdToTalkInputSource == .alternativeShortcut,
+           let newShortcut,
+           newShortcut == KeyboardShortcuts.getShortcut(for: .holdToTalk)
+        {
+            KeyboardShortcuts.setShortcut(lastValidToggleShortcut, for: .toggleDictation)
+            hotkeyValidationMessage = "Toggle and hold shortcuts must be different."
+            return
+        }
+
+        lastValidToggleShortcut = newShortcut
+        hotkeyValidationMessage = nil
+    }
+
+    private func handleHoldShortcutChange(_ newShortcut: KeyboardShortcuts.Shortcut?) {
+        guard appState.holdToTalkInputSource == .alternativeShortcut else {
+            lastValidHoldShortcut = newShortcut
+            hotkeyValidationMessage = nil
+            return
+        }
+
+        if let newShortcut, newShortcut == KeyboardShortcuts.getShortcut(for: .toggleDictation) {
+            KeyboardShortcuts.setShortcut(lastValidHoldShortcut, for: .holdToTalk)
+            hotkeyValidationMessage = "Toggle and hold shortcuts must be different."
+            return
+        }
+
+        lastValidHoldShortcut = newShortcut
+        hotkeyValidationMessage = nil
     }
 }
 
@@ -476,9 +614,9 @@ private struct SettingsSwitch: View {
 
     var body: some View {
         Toggle("", isOn: $isOn)
-            .labelsHidden()
-            .toggleStyle(SettingsSwitchToggleStyle())
-            .fixedSize()
+        .labelsHidden()
+        .toggleStyle(SettingsSwitchToggleStyle())
+        .fixedSize()
     }
 }
 
@@ -584,23 +722,19 @@ private struct PersonaRadioRow: View {
 
             Spacer()
 
-            if onEdit != nil || onDelete != nil {
+            if let onEdit, let onDelete {
                 HStack(spacing: 8) {
-                    if let onEdit {
-                        Button(action: onEdit) {
-                            Image(systemName: "pencil")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
+                    Button(action: onEdit) {
+                        Image(systemName: "pencil")
+                            .foregroundStyle(.secondary)
                     }
+                    .buttonStyle(.plain)
 
-                    if let onDelete {
-                        Button(action: onDelete) {
-                            Image(systemName: "trash")
-                                .foregroundStyle(.red)
-                        }
-                        .buttonStyle(.plain)
+                    Button(action: onDelete) {
+                        Image(systemName: "trash")
+                            .foregroundStyle(.red)
                     }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -1017,10 +1151,6 @@ struct PersonasTab: View {
     @State private var dontAskAppRuleDeleteAgain = false
     @State private var showingDisconnectAlert = false
 
-    private var personasById: [String: Persona] {
-        Dictionary(uniqueKeysWithValues: appState.allPersonas.map { ($0.id, $0) })
-    }
-
     var isPersonasAvailable: Bool {
         // Personas available based on selected provider
         switch appState.selectedAIProviderId {
@@ -1216,92 +1346,95 @@ struct PersonasTab: View {
 
                                         // Existing rules
                                         if !appState.appRules.isEmpty {
-                                            VStack(spacing: 8) {
-                                                ForEach(appState.appRules.sorted(by: { $0.appName < $1.appName })) { rule in
-                                                    HStack(spacing: 12) {
-                                                        if let iconData = rule.appIcon,
-                                                           let nsImage = NSImage(data: iconData)
-                                                        {
-                                                            Image(nsImage: nsImage)
-                                                                .resizable()
-                                                                .frame(width: 32, height: 32)
-                                                        } else {
-                                                            Image(systemName: "app.fill")
-                                                                .font(.system(size: 24))
-                                                                .foregroundStyle(.secondary)
-                                                        }
-
-                                                        VStack(alignment: .leading, spacing: 2) {
-                                                            Text(rule.appName)
-                                                                .font(.subheadline.weight(.medium))
-
-                                                            if let persona = personasById[rule.personaId] {
-                                                                HStack(spacing: 6) {
-                                                                    Text("\u{2192}")
-                                                                        .foregroundStyle(.secondary)
-                                                                    if let emoji = persona.emoji {
-                                                                        Text(emoji)
-                                                                            .font(.system(size: 14))
-                                                                    }
-                                                                    Text(persona.name)
-                                                                        .font(.caption)
-                                                                        .foregroundStyle(.secondary)
-                                                                }
-                                                            } else if rule.personaId == "none" {
-                                                                HStack(spacing: 6) {
-                                                                    Text("\u{2192}")
-                                                                        .foregroundStyle(.secondary)
-                                                                    Text("No persona")
-                                                                        .font(.caption)
-                                                                        .foregroundStyle(.secondary)
-                                                                }
+                                            ScrollView {
+                                                LazyVStack(spacing: 8) {
+                                                    ForEach(appState.appRules.sorted(by: { $0.appName < $1.appName })) { rule in
+                                                        HStack(spacing: 12) {
+                                                            if let iconData = rule.appIcon,
+                                                               let nsImage = NSImage(data: iconData)
+                                                            {
+                                                                Image(nsImage: nsImage)
+                                                                    .resizable()
+                                                                    .frame(width: 32, height: 32)
                                                             } else {
-                                                                Text("Unknown persona")
-                                                                    .font(.caption)
-                                                                    .foregroundStyle(.red)
-                                                            }
-                                                        }
-
-                                                        Spacer()
-
-                                                        HStack(spacing: 8) {
-                                                            Button {
-                                                                // Find the app and show picker
-                                                                if let iconData = rule.appIcon, let icon = NSImage(data: iconData) {
-                                                                    showingAppRulePicker = DetectedApp(
-                                                                        bundleId: rule.appBundleId,
-                                                                        name: rule.appName,
-                                                                        icon: icon
-                                                                    )
-                                                                }
-                                                            } label: {
-                                                                Image(systemName: "pencil")
+                                                                Image(systemName: "app.fill")
+                                                                    .font(.system(size: 24))
                                                                     .foregroundStyle(.secondary)
                                                             }
-                                                            .buttonStyle(.plain)
 
-                                                            Button {
-                                                                if appState.showAppRuleDeleteConfirmation {
-                                                                    appRuleToDelete = rule
-                                                                    showingDeleteAppRuleAlert = true
+                                                            VStack(alignment: .leading, spacing: 2) {
+                                                                Text(rule.appName)
+                                                                    .font(.subheadline.weight(.medium))
+
+                                                                if let persona = appState.allPersonas.first(where: { $0.id == rule.personaId }) {
+                                                                    HStack(spacing: 6) {
+                                                                        Text("\u{2192}")
+                                                                            .foregroundStyle(.secondary)
+                                                                        if let emoji = persona.emoji {
+                                                                            Text(emoji)
+                                                                                .font(.system(size: 14))
+                                                                        }
+                                                                        Text(persona.name)
+                                                                            .font(.caption)
+                                                                            .foregroundStyle(.secondary)
+                                                                    }
+                                                                } else if rule.personaId == "none" {
+                                                                    HStack(spacing: 6) {
+                                                                        Text("\u{2192}")
+                                                                            .foregroundStyle(.secondary)
+                                                                        Text("No persona")
+                                                                            .font(.caption)
+                                                                            .foregroundStyle(.secondary)
+                                                                    }
                                                                 } else {
-                                                                    appState.deleteAppRule(id: rule.id)
+                                                                    Text("Unknown persona")
+                                                                        .font(.caption)
+                                                                        .foregroundStyle(.red)
                                                                 }
-                                                            } label: {
-                                                                Image(systemName: "trash")
-                                                                    .foregroundStyle(.red)
                                                             }
-                                                            .buttonStyle(.plain)
+
+                                                            Spacer()
+
+                                                            HStack(spacing: 8) {
+                                                                Button {
+                                                                    // Find the app and show picker
+                                                                    if let iconData = rule.appIcon, let icon = NSImage(data: iconData) {
+                                                                        showingAppRulePicker = DetectedApp(
+                                                                            bundleId: rule.appBundleId,
+                                                                            name: rule.appName,
+                                                                            icon: icon
+                                                                        )
+                                                                    }
+                                                                } label: {
+                                                                    Image(systemName: "pencil")
+                                                                        .foregroundStyle(.secondary)
+                                                                }
+                                                                .buttonStyle(.plain)
+
+                                                                Button {
+                                                                    if appState.showAppRuleDeleteConfirmation {
+                                                                        appRuleToDelete = rule
+                                                                        showingDeleteAppRuleAlert = true
+                                                                    } else {
+                                                                        appState.deleteAppRule(id: rule.id)
+                                                                    }
+                                                                } label: {
+                                                                    Image(systemName: "trash")
+                                                                        .foregroundStyle(.red)
+                                                                }
+                                                                .buttonStyle(.plain)
+                                                            }
                                                         }
+                                                        .padding(.vertical, 4)
+                                                        .padding(.horizontal, 12)
+                                                        .background(
+                                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                                .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.3))
+                                                        )
                                                     }
-                                                    .padding(.vertical, 4)
-                                                    .padding(.horizontal, 12)
-                                                    .background(
-                                                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                            .fill(Color(nsColor: .quaternaryLabelColor).opacity(0.3))
-                                                    )
                                                 }
                                             }
+                                            .frame(maxHeight: 300)
                                         }
                                     }
                                 }
@@ -1316,36 +1449,39 @@ struct PersonasTab: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
 
-                                    VStack(alignment: .leading, spacing: 8) {
-                                        PersonaRadioRow(
-                                            isSelected: appState.selectedPersonaId == nil,
-                                            emoji: nil,
-                                            name: "No persona",
-                                            description: "Use raw transcription",
-                                            isBuiltIn: false,
-                                            onSelect: { appState.selectedPersonaId = nil }
-                                        )
-
-                                        ForEach(appState.allPersonas) { prompt in
+                                    ScrollView {
+                                        LazyVStack(alignment: .leading, spacing: 8) {
                                             PersonaRadioRow(
-                                                isSelected: appState.selectedPersonaId == prompt.id,
-                                                emoji: prompt.emoji,
-                                                name: prompt.name,
-                                                description: prompt.instruction,
-                                                isBuiltIn: prompt.isBuiltIn,
-                                                onSelect: { appState.selectedPersonaId = prompt.id },
-                                                onEdit: prompt.isBuiltIn ? nil : { editingPrompt = prompt },
-                                                onDelete: prompt.isBuiltIn ? nil : {
-                                                    if appState.showPersonaDeleteConfirmation {
-                                                        personaToDelete = prompt
-                                                        showingDeletePersonaAlert = true
-                                                    } else {
-                                                        appState.deletePersona(id: prompt.id)
-                                                    }
-                                                }
+                                                isSelected: appState.selectedPersonaId == nil,
+                                                emoji: nil,
+                                                name: "No persona",
+                                                description: "Use raw transcription",
+                                                isBuiltIn: false,
+                                                onSelect: { appState.selectedPersonaId = nil }
                                             )
+
+                                            ForEach(appState.allPersonas) { prompt in
+                                                PersonaRadioRow(
+                                                    isSelected: appState.selectedPersonaId == prompt.id,
+                                                    emoji: prompt.emoji,
+                                                    name: prompt.name,
+                                                    description: prompt.instruction,
+                                                    isBuiltIn: prompt.isBuiltIn,
+                                                    onSelect: { appState.selectedPersonaId = prompt.id },
+                                                    onEdit: prompt.isBuiltIn ? nil : { editingPrompt = prompt },
+                                                    onDelete: prompt.isBuiltIn ? nil : {
+                                                        if appState.showPersonaDeleteConfirmation {
+                                                            personaToDelete = prompt
+                                                            showingDeletePersonaAlert = true
+                                                        } else {
+                                                            appState.deletePersona(id: prompt.id)
+                                                        }
+                                                    }
+                                                )
+                                            }
                                         }
                                     }
+                                    .frame(maxHeight: 400)
 
                                     Divider()
 
@@ -2094,6 +2230,27 @@ struct PermissionsTab: View {
                             }
                         }
                     }
+
+                    if recoverySnapshot.isDegradedLaunch {
+                        SettingsSectionCard("Startup Help") {
+                            SettingsCardRow(showsDivider: false) {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Label("Flowstay had trouble starting on its last launch.", systemImage: "wrench.and.screwdriver.fill")
+                                        .foregroundStyle(.orange)
+
+                                    Text("Flowstay opened in a safer mode for this launch, so some features may be temporarily limited until you review the suggested fixes.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+
+                                    Button("Fix Startup Issues") {
+                                        MenuBarHelper.openRecovery()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
@@ -2108,6 +2265,10 @@ struct PermissionsTab: View {
                 }
             }
         }
+    }
+
+    private var recoverySnapshot: StartupRecoverySnapshot {
+        StartupRecoveryManager.shared.snapshot
     }
 }
 

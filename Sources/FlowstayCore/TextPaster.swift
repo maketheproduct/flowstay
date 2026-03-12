@@ -1,5 +1,4 @@
 import AppKit
-import Carbon
 import Foundation
 import os
 
@@ -26,12 +25,20 @@ public class TextPaster {
 
         // Save current clipboard content
         let pasteboard = NSPasteboard.general
-        let currentClipboard = pasteboard.string(forType: .string)
+        let originalClipboard = PasteboardSnapshot.capture(from: pasteboard)
 
         // Put our text on the clipboard
         pasteboard.clearContents()
         let clipboardSuccess = pasteboard.setString(text, forType: .string)
         logger.debug("[TextPaster] Clipboard set success: \(clipboardSuccess)")
+
+        guard clipboardSuccess else {
+            originalClipboard.restore(to: pasteboard)
+            logger.warning("[TextPaster] Failed to stage clipboard text for paste")
+            return
+        }
+
+        let insertedChangeCount = pasteboard.changeCount
 
         // Verify clipboard content
         let clipboardSet = pasteboard.string(forType: .string) == text
@@ -55,15 +62,13 @@ public class TextPaster {
         await Task {
             try? await Task.sleep(nanoseconds: 500_000_000) // 500ms - increased to ensure paste completes
             await MainActor.run {
-                if let originalContent = currentClipboard {
-                    pasteboard.clearContents()
-                    pasteboard.setString(originalContent, forType: .string)
-                    logger.debug("[TextPaster] Clipboard restored")
-                } else {
-                    // If there was no previous clipboard content, clear sensitive text
-                    pasteboard.clearContents()
-                    logger.debug("[TextPaster] Clipboard cleared (no previous content)")
+                guard pasteboard.changeCount == insertedChangeCount else {
+                    logger.debug("[TextPaster] Clipboard changed after paste; skipping restore")
+                    return
                 }
+
+                originalClipboard.restore(to: pasteboard)
+                logger.debug("[TextPaster] Clipboard restored")
             }
         }.value
     }
@@ -120,6 +125,25 @@ public class TextPaster {
                 event.keyboardSetUnicodeString(stringLength: utf16Chars.count, unicodeString: utf16Chars)
                 event.post(tap: .cgAnnotatedSessionEventTap)
             }
+        }
+    }
+}
+
+private struct PasteboardSnapshot {
+    let items: [NSPasteboardItem]
+
+    static func capture(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
+        let copiedItems = pasteboard.pasteboardItems?.compactMap { item in
+            item.copy() as? NSPasteboardItem
+        } ?? []
+        return PasteboardSnapshot(items: copiedItems)
+    }
+
+    @MainActor
+    func restore(to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        if !items.isEmpty {
+            pasteboard.writeObjects(items)
         }
     }
 }

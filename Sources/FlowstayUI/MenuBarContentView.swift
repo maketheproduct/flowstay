@@ -1,9 +1,14 @@
 import AVFoundation
 import FlowstayCore
+import KeyboardShortcuts
 import SwiftUI
 
 /// Clean, minimal menu bar dropdown content
 public struct MenuBarView: View {
+    public static let popoverWidth: CGFloat = 340
+    private static let basePopoverHeight: CGFloat = 400
+    private static let bannerHeight: CGFloat = 72
+
     @ObservedObject var appState: AppState
     @ObservedObject var engineCoordinator: EngineCoordinatorViewModel
     @ObservedObject var permissionManager: PermissionManager
@@ -21,6 +26,69 @@ public struct MenuBarView: View {
         self.appState = appState
         self.engineCoordinator = engineCoordinator
         self.permissionManager = permissionManager
+    }
+
+    public static func preferredPopoverSize(
+        criticalPermissionsGranted: Bool,
+        onboardingComplete: Bool,
+        recoveryActive: Bool,
+        modelsReady: Bool,
+        isRecording: Bool
+    ) -> CGSize {
+        CGSize(
+            width: popoverWidth,
+            height: preferredPopoverHeight(
+                criticalPermissionsGranted: criticalPermissionsGranted,
+                onboardingComplete: onboardingComplete,
+                recoveryActive: recoveryActive,
+                modelsReady: modelsReady,
+                isRecording: isRecording
+            )
+        )
+    }
+
+    public static func preferredPopoverHeight(
+        criticalPermissionsGranted: Bool,
+        onboardingComplete: Bool,
+        recoveryActive: Bool,
+        modelsReady: Bool,
+        isRecording: Bool
+    ) -> CGFloat {
+        basePopoverHeight + CGFloat(visibleBannerCount(
+            criticalPermissionsGranted: criticalPermissionsGranted,
+            onboardingComplete: onboardingComplete,
+            recoveryActive: recoveryActive,
+            modelsReady: modelsReady,
+            isRecording: isRecording
+        )) * bannerHeight
+    }
+
+    static func visibleBannerCount(
+        criticalPermissionsGranted: Bool,
+        onboardingComplete: Bool,
+        recoveryActive: Bool,
+        modelsReady: Bool,
+        isRecording: Bool
+    ) -> Int {
+        var count = 0
+
+        if !criticalPermissionsGranted {
+            count += 1
+        }
+
+        if !onboardingComplete, criticalPermissionsGranted {
+            count += 1
+        }
+
+        if recoveryActive {
+            count += 1
+        }
+
+        if criticalPermissionsGranted, !modelsReady, !isRecording {
+            count += 1
+        }
+
+        return count
     }
 
     public var body: some View {
@@ -42,10 +110,10 @@ public struct MenuBarView: View {
             actionsSection
                 .padding(.top, 8)
         }
-        .frame(width: 340)
+        .frame(width: Self.popoverWidth)
         .frame(maxHeight: .infinity)
         .padding(.vertical, 16)
-        .frame(height: 400)
+        .frame(height: preferredPopoverHeight)
         .onAppear {
             // NOTE: GlobalShortcutsManager.initialize is now called from AppInitializationService
             // (either during onboarding completion or in applicationDidFinishLaunching for returning users)
@@ -58,6 +126,16 @@ public struct MenuBarView: View {
     }
 
     // MARK: - Header Section
+
+    private var preferredPopoverHeight: CGFloat {
+        Self.preferredPopoverHeight(
+            criticalPermissionsGranted: permissionManager.criticalPermissionsGranted,
+            onboardingComplete: UserDefaults.standard.hasCompletedOnboarding,
+            recoveryActive: recoverySnapshot.isDegradedLaunch,
+            modelsReady: engineCoordinator.isModelsReady,
+            isRecording: engineCoordinator.isRecording
+        )
+    }
 
     private var headerSection: some View {
         VStack(spacing: 8) {
@@ -116,6 +194,66 @@ public struct MenuBarView: View {
                 .padding(.horizontal, 16)
             }
 
+            if !UserDefaults.standard.hasCompletedOnboarding, permissionManager.criticalPermissionsGranted {
+                HStack(spacing: 6) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.blue)
+
+                    Text(engineCoordinator.isModelsReady ? "Setup incomplete" : "Setup paused")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+
+                    Spacer()
+
+                    Button("Resume") {
+                        openOnboardingWindow()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.flowstayBlue)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
+                .background(Color.blue.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal, 16)
+            }
+
+            if recoverySnapshot.isDegradedLaunch {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "wrench.and.screwdriver.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                        .padding(.top, 2)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Startup issue detected")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text(recoverySummaryText)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button("Fix") {
+                        openRecoveryWindow()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Color.flowstayBlue)
+                    .fixedSize()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal, 16)
+            }
+
             // Model loading indicator (shown while pre-loading on launch)
             if permissionManager.criticalPermissionsGranted, !engineCoordinator.isModelsReady, !engineCoordinator.isRecording {
                 HStack(spacing: 6) {
@@ -164,7 +302,7 @@ public struct MenuBarView: View {
                 // Empty state placeholder
                 VStack {
                     Spacer()
-                    Text("Press ⌥Space to start transcribing in any app")
+                    Text("Press \(toggleShortcutPrompt) to start transcribing in any app")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -194,6 +332,13 @@ public struct MenuBarView: View {
 
     // MARK: - Actions Section
 
+    private var toggleShortcutPrompt: String {
+        if let shortcut = KeyboardShortcuts.getShortcut(for: .toggleDictation) {
+            return shortcut.description
+        }
+        return "⌥Space"
+    }
+
     private var actionsSection: some View {
         VStack(spacing: 12) {
             // Modern recording button
@@ -212,6 +357,14 @@ public struct MenuBarView: View {
                         .font(.system(size: 12))
                 }
                 .buttonStyle(.borderless)
+
+                if recoverySnapshot.isDegradedLaunch {
+                    Button(action: openRecoveryWindow) {
+                        Label("Fix Startup Issues", systemImage: "wrench.and.screwdriver")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.borderless)
+                }
 
                 Spacer()
 
@@ -245,6 +398,31 @@ public struct MenuBarView: View {
         }
     }
 
+    private var recoverySnapshot: StartupRecoverySnapshot {
+        StartupRecoveryManager.shared.snapshot
+    }
+
+    private var recoverySummaryText: String {
+        if recoverySnapshot.skippedSubsystems.isEmpty {
+            return "Some features are temporarily limited until you review the suggested fixes."
+        }
+
+        let names = recoverySnapshot.skippedSubsystems.map {
+            switch $0 {
+            case .globalShortcuts:
+                "shortcuts"
+            case .autoUpdate:
+                "automatic updates"
+            }
+        }
+
+        if names.count == 1 {
+            return "\(names[0].capitalized) are temporarily limited until you review the suggested fixes."
+        }
+
+        return "Some features like \(names.joined(separator: " and ")) are temporarily limited."
+    }
+
     // MARK: - Helper Methods
 
     private func copyToClipboard(_ text: String) {
@@ -263,6 +441,11 @@ public struct MenuBarView: View {
     private func openOnboardingWindow() {
         // Open the onboarding window via delegate
         MenuBarHelper.openOnboarding()
+    }
+
+    private func openRecoveryWindow() {
+        MenuBarHelper.closeMenuBar()
+        MenuBarHelper.openRecovery()
     }
 
     private func startPulseAnimation() {

@@ -29,7 +29,11 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private var settingsWindow: NSWindow?
     private var onboardingWindow: NSWindow?
     private var recoveryWindow: NSWindow?
+    private var onboardingWindowDelegate: OnboardingWindowDelegate?
     private var recoveryWindowDelegate: RecoveryWindowDelegate?
+    private var onboardingOverlayMode: OnboardingOverlayMode = .suppressed
+    private var shouldRestoreOnboardingWindowAfterAccessibilityPrompt = false
+    private var onboardingWindowLevelBeforeAccessibilityPrompt: NSWindow.Level?
 
     // MARK: - State (owned by delegate, not SwiftUI)
 
@@ -58,6 +62,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private var firstHotkeyFeedbackAt: Date?
     private var firstRecordingStartAt: Date?
     private var hotkeyListenerReadyAt: Date?
+    private var lastPopoverGuidanceAt: Date?
 
     private struct PersonaProcessingOutcome {
         let processedText: String
@@ -74,10 +79,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         let startupContext = StartupRecoveryManager.shared.beginLaunch(version: shortVersion, build: buildVersion)
         if startupContext.recoveryMode {
-            let stage = startupContext.previousIncompleteStage?.rawValue ?? "unknown"
-            let build = startupContext.buildIdentifier
             logger.fault(
-                "[AppDelegate] Startup recovery enabled for build \(build, privacy: .public) after incomplete stage \(stage, privacy: .public)"
+                "[AppDelegate] Startup recovery enabled for build \(startupContext.buildIdentifier, privacy: .public) after incomplete stage \(startupContext.previousIncompleteStage?.rawValue ?? "unknown", privacy: .public)"
             )
         }
 
@@ -94,6 +97,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         setupRecordingObserver()
         setupOverlayObserver()
         setupModelReadinessObserver()
+        setupHoldInputSourceObserver()
         MenuBarHelper.delegate = self
         StartupRecoveryManager.shared.markStage(.uiReady)
 
@@ -146,6 +150,11 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         false
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        _ = notification
+        restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(reason: "app-became-active")
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         logger.info("[AppDelegate] applicationWillTerminate - cleaning up")
         overlayProcessingTimeoutTask?.cancel()
@@ -167,6 +176,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
         permissionManager = PermissionManager()
         appState = AppState()
+        GlobalShortcutsManager.setHoldInputSource(appState.holdToTalkInputSource)
         engineCoordinator = EngineCoordinatorViewModel(appState: appState)
         personasEngine = PersonasEngine()
         overlayWindowController = OverlayWindowController(engineCoordinator: engineCoordinator)
@@ -402,23 +412,32 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         popover.behavior = .transient
         popover.animates = true
 
-        // Set explicit content size for reliable positioning
-        popover.contentSize = NSSize(width: 340, height: 400)
+        let popoverSize = preferredPopoverSize()
 
-        // Create MenuBarView ONCE at startup - maintains proper layout for correct positioning
-        let menuBarView = MenuBarView(
+        // Set explicit content size for reliable positioning
+        popover.contentSize = popoverSize
+
+        installPopoverContent(size: popoverSize, appearance: statusItem?.button?.effectiveAppearance)
+
+        logger.info("[AppDelegate] ✅ Status item and popover configured with MenuBarView")
+    }
+
+    private func makeMenuBarRootView() -> MenuBarView {
+        MenuBarView(
             appState: appState,
             engineCoordinator: engineCoordinator,
             permissionManager: permissionManager
         )
-        let hostingController = NSHostingController(rootView: menuBarView)
+    }
 
-        // Set explicit frame to ensure size is known before first show
-        hostingController.view.frame = NSRect(x: 0, y: 0, width: 340, height: 400)
+    private func installPopoverContent(size: CGSize, appearance: NSAppearance?) {
+        let hostingController = NSHostingController(rootView: makeMenuBarRootView())
+        hostingController.view.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
+        hostingController.view.appearance = appearance
 
+        popover.appearance = appearance
+        popover.contentSize = size
         popover.contentViewController = hostingController
-
-        logger.info("[AppDelegate] ✅ Status item and popover configured with MenuBarView")
     }
 
     private func setupRecordingObserver() {
@@ -458,6 +477,13 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 previousRecordingState = isRecording
             }
             .store(in: &cancellables)
+
+        engineCoordinator.$isTransitioningRecordingState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.applyOverlayVisibility(reason: "recording-transition-updated")
+            }
+            .store(in: &cancellables)
     }
 
     private func setupModelReadinessObserver() {
@@ -487,12 +513,25 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             .store(in: &cancellables)
     }
 
+    private func setupHoldInputSourceObserver() {
+        appState.$holdToTalkInputSource
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { source in
+                GlobalShortcutsManager.setHoldInputSource(source)
+            }
+            .store(in: &cancellables)
+    }
+
     private func applyOverlayVisibility(reason: String) {
         let now = Date()
         let nextPhase = OverlayVisibilityPolicy.resolve(
             OverlayVisibilityInput(
                 overlayEnabled: overlayIsEnabled,
                 isRecording: engineCoordinator.isRecording,
+                isTransitioningToRecording: engineCoordinator.isTransitioningRecordingState
+                    && !engineCoordinator.isRecording
+                    && !isAwaitingTranscriptionCompletion,
                 isHotkeyStartPending: isHotkeyStartPending,
                 isQueuedWarmup: queuedStartRequest,
                 isAwaitingCompletion: isAwaitingTranscriptionCompletion,
@@ -556,11 +595,30 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     }
 
     private var overlayIsEnabled: Bool {
-        UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true
+        OverlayEnablementPolicy.resolve(
+            OverlayEnablementInput(
+                userPreferenceEnabled: UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true,
+                onboardingVisible: onboardingWindow?.isVisible ?? false,
+                onboardingOverlayMode: onboardingOverlayMode
+            )
+        )
     }
 
     private func currentOverlayScreen() -> NSScreen? {
-        statusItem?.button?.window?.screen ?? NSScreen.main
+        if onboardingOverlayMode == .followRuntime,
+           onboardingWindow?.isVisible == true,
+           let onboardingScreen = onboardingWindow?.screen
+        {
+            return onboardingScreen
+        }
+
+        return statusItem?.button?.window?.screen ?? NSScreen.main
+    }
+
+    private func setOnboardingOverlayMode(_ mode: OnboardingOverlayMode, reason: String) {
+        guard onboardingOverlayMode != mode else { return }
+        onboardingOverlayMode = mode
+        applyOverlayVisibility(reason: reason)
     }
 
     private func handleOverlayRecordingTransition(isRecording: Bool) {
@@ -958,13 +1016,25 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     }
 
     func showPopover() {
+        showPopover(retryCount: 0, forceOnFailure: false)
+    }
+
+    private func showPopover(retryCount: Int, forceOnFailure: Bool) {
         guard let button = statusItem?.button else { return }
 
         // Ensure button's window is ready for accurate positioning
         // On first show after launch, the button may not have its window set
         guard button.window != nil else {
+            guard retryCount < 3 else {
+                if forceOnFailure {
+                    forceShowPopover(button: button, reason: "status-button-window-unavailable")
+                } else {
+                    showMenuBarClickGuidance(reason: "status-button-window-unavailable")
+                }
+                return
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.showPopover()
+                self?.showPopover(retryCount: retryCount + 1, forceOnFailure: forceOnFailure)
             }
             return
         }
@@ -974,17 +1044,70 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         engineCoordinator.objectWillChange.send()
 
         // Force layout to ensure size is calculated correctly
+        let popoverSize = preferredPopoverSize()
+        let appearance = button.window?.effectiveAppearance ?? button.effectiveAppearance
+        installPopoverContent(size: popoverSize, appearance: appearance)
         popover.contentViewController?.view.layoutSubtreeIfNeeded()
 
         // Activate app BEFORE showing popover (better focus handling)
         NSApp.activate(ignoringOtherApps: true)
 
-        // Show popover
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        let anchorResolution = MenuBarPopoverAnchorPolicy.resolve(button: button)
+        if anchorResolution.isValid {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            return
+        }
+
+        guard retryCount < 3 else {
+            if forceOnFailure {
+                forceShowPopover(button: button, reason: anchorResolution.reason)
+            } else {
+                showMenuBarClickGuidance(reason: anchorResolution.reason)
+            }
+            return
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            self?.showPopover(retryCount: retryCount + 1, forceOnFailure: forceOnFailure)
+        }
     }
 
     func closePopover() {
         popover.performClose(nil)
+    }
+
+    private func preferredPopoverSize() -> CGSize {
+        MenuBarView.preferredPopoverSize(
+            criticalPermissionsGranted: permissionManager.criticalPermissionsGranted,
+            onboardingComplete: UserDefaults.standard.hasCompletedOnboarding,
+            recoveryActive: StartupRecoveryManager.shared.snapshot.isDegradedLaunch,
+            modelsReady: engineCoordinator.isModelsReady,
+            isRecording: engineCoordinator.isRecording
+        )
+    }
+
+    private func showMenuBarClickGuidance(reason: String) {
+        let now = Date()
+        if let lastPopoverGuidanceAt, now.timeIntervalSince(lastPopoverGuidanceAt) < 5 {
+            return
+        }
+        lastPopoverGuidanceAt = now
+
+        logger.warning("[AppDelegate] Popover anchor invalid after retries (reason: \(reason, privacy: .public))")
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Flowstay is ready"
+        alert.informativeText = "Click the Flowstay icon in the menu bar to open the panel."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
+    }
+
+    private func forceShowPopover(button: NSStatusBarButton, reason: String) {
+        logger.warning("[AppDelegate] Forcing popover presentation (reason: \(reason, privacy: .public))")
+        NSApp.activate(ignoringOtherApps: true)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 
     func toggleTranscriptionFromMenuBar() {
@@ -1004,9 +1127,22 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     // MARK: - Settings Window
 
     func openSettingsWindow() {
+        if popover.isShown {
+            closePopover()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                self?.presentSettingsWindow()
+            }
+            return
+        }
+
+        presentSettingsWindow()
+    }
+
+    private func presentSettingsWindow() {
         if let existingWindow = settingsWindow, existingWindow.isVisible {
-            existingWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            existingWindow.makeKeyAndOrderFront(nil)
+            refreshWindowContentAfterPresentation(existingWindow)
             return
         }
 
@@ -1024,24 +1160,76 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         window.titlebarAppearsTransparent = true
         window.isMovableByWindowBackground = true
         window.backgroundColor = .windowBackgroundColor
-        window.setContentSize(NSSize(width: 700, height: 550))
+        window.setContentSize(NSSize(width: 860, height: 620))
         window.center()
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        refreshWindowContentAfterPresentation(window)
 
         settingsWindow = window
-        NSApp.activate(ignoringOtherApps: true)
 
         logger.info("[AppDelegate] Settings window opened")
+    }
+
+    func openRecoveryWindow() {
+        openRecoveryWindow(autoPresented: false)
+    }
+
+    private func openRecoveryWindow(autoPresented: Bool) {
+        closePopover()
+
+        if let existingWindow = recoveryWindow, existingWindow.isVisible {
+            NSApp.activate(ignoringOtherApps: true)
+            existingWindow.makeKeyAndOrderFront(nil)
+            refreshWindowContentAfterPresentation(existingWindow)
+            return
+        }
+
+        let recoveryView = RecoveryTroubleshootingView(
+            appState: appState,
+            autoPresented: autoPresented,
+            onContinue: { [weak self] in
+                self?.recoveryWindow?.close()
+            }
+        )
+
+        let hostingController = NSHostingController(rootView: recoveryView)
+        let window = NSWindow(contentViewController: hostingController)
+        window.title = "Flowstay Troubleshooting"
+        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .windowBackgroundColor
+        window.setContentSize(NSSize(width: 760, height: 640))
+        let delegate = RecoveryWindowDelegate { [weak self] in
+            self?.recoveryWindow = nil
+            self?.recoveryWindowDelegate = nil
+        }
+        recoveryWindowDelegate = delegate
+        window.delegate = delegate
+        window.center()
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        refreshWindowContentAfterPresentation(window)
+
+        recoveryWindow = window
+        logger.info("[AppDelegate] Recovery troubleshooting window opened")
     }
 
     // MARK: - Onboarding Window
 
     func openOnboardingWindow() {
+        closePopover()
+
         if let existingWindow = onboardingWindow, existingWindow.isVisible {
-            existingWindow.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+            existingWindow.makeKeyAndOrderFront(nil)
+            refreshWindowContentAfterPresentation(existingWindow)
+            applyOverlayVisibility(reason: "onboarding-window-reopened")
             return
         }
+
+        setOnboardingOverlayMode(.suppressed, reason: "onboarding-window-open-requested")
 
         let onboardingView = OnboardingView(
             permissionManager: permissionManager,
@@ -1049,30 +1237,120 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             appState: appState,
             onComplete: { [weak self] in
                 guard let self else { return }
-                logger.info("[AppDelegate] Onboarding completed - finalizing initialization")
+                self.logger.info("[AppDelegate] Onboarding completed - finalizing initialization")
                 Task { @MainActor in
                     await self.initService.finalizeInitialization()
-                    try? await Task.sleep(for: .milliseconds(500))
                     self.onboardingWindow?.close()
-                    self.showPopover()
+                    await self.presentPrimarySurfaceAfterOnboardingCompletion()
                 }
+            },
+            onOverlayModeChange: { [weak self] mode in
+                self?.setOnboardingOverlayMode(mode, reason: "onboarding-scene-updated")
+            },
+            onAccessibilityPromptWillPresent: { [weak self] in
+                await self?.prepareOnboardingWindowForAccessibilityPrompt()
+            },
+            onAccessibilityPromptDidComplete: { [weak self] granted in
+                guard granted else { return }
+                self?.restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(reason: "accessibility-request-granted")
             }
         )
-        .frame(width: 600, height: 500)
+        .frame(width: 860, height: 660)
 
         let hostingController = NSHostingController(rootView: onboardingView)
+        hostingController.view.wantsLayer = true
+        hostingController.view.layer?.backgroundColor = NSColor.clear.cgColor
 
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "Welcome to Flowstay"
-        window.styleMask = [.titled, .closable]
-        window.setContentSize(NSSize(width: 600, height: 500))
+        let window = OnboardingPanel(contentViewController: hostingController)
+        window.isMovableByWindowBackground = true
+        window.backgroundColor = .clear
+        window.isOpaque = false
+        window.hasShadow = false
+        window.level = .floating
+        window.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
+        window.setContentSize(NSSize(width: 860, height: 660))
+
+        let delegate = OnboardingWindowDelegate(
+            permissionManager: permissionManager,
+            engineCoordinator: engineCoordinator,
+            onWindowWillClose: { [weak self] in
+                guard let self else { return }
+                self.onboardingWindow = nil
+                self.onboardingWindowDelegate = nil
+                self.clearOnboardingAccessibilityPromptState()
+                self.setOnboardingOverlayMode(.suppressed, reason: "onboarding-window-closed")
+                self.applyOverlayVisibility(reason: "onboarding-window-closed")
+            }
+        )
+        onboardingWindowDelegate = delegate
+        window.delegate = delegate
+
         window.center()
+        NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
+        refreshWindowContentAfterPresentation(window)
 
         onboardingWindow = window
-        NSApp.activate(ignoringOtherApps: true)
+        applyOverlayVisibility(reason: "onboarding-window-opened")
 
         logger.info("[AppDelegate] Onboarding window opened")
+    }
+
+    private func presentPrimarySurfaceAfterOnboardingCompletion() async {
+        // Allow one runloop turn for menu bar anchor geometry to settle after
+        // onboarding window closure and activation policy transitions.
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(120))
+        showPopover(retryCount: 0, forceOnFailure: true)
+    }
+
+    private func refreshWindowContentAfterPresentation(_ window: NSWindow) {
+        DispatchQueue.main.async {
+            window.contentView?.needsLayout = true
+            window.contentView?.layoutSubtreeIfNeeded()
+            window.contentView?.displayIfNeeded()
+        }
+    }
+
+    private func prepareOnboardingWindowForAccessibilityPrompt() async {
+        guard let onboardingWindow, onboardingWindow.isVisible else { return }
+
+        if !shouldRestoreOnboardingWindowAfterAccessibilityPrompt {
+            onboardingWindowLevelBeforeAccessibilityPrompt = onboardingWindow.level
+        }
+
+        shouldRestoreOnboardingWindowAfterAccessibilityPrompt = true
+
+        // The system controls the Accessibility approval UI. Move the onboarding
+        // panel behind it so the prompt or System Settings can become visible.
+        onboardingWindow.level = .normal
+        onboardingWindow.orderBack(nil)
+
+        await Task.yield()
+        try? await Task.sleep(for: .milliseconds(180))
+    }
+
+    private func restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(reason: String) {
+        guard shouldRestoreOnboardingWindowAfterAccessibilityPrompt else { return }
+
+        guard let onboardingWindow else {
+            clearOnboardingAccessibilityPromptState()
+            return
+        }
+
+        onboardingWindow.level = onboardingWindowLevelBeforeAccessibilityPrompt ?? .floating
+
+        guard NSApp.isActive else { return }
+
+        onboardingWindow.makeKeyAndOrderFront(nil)
+        refreshWindowContentAfterPresentation(onboardingWindow)
+        logger.debug("[AppDelegate] Restored onboarding window after accessibility flow (\(reason, privacy: .public))")
+        clearOnboardingAccessibilityPromptState()
+    }
+
+    private func clearOnboardingAccessibilityPromptState() {
+        shouldRestoreOnboardingWindowAfterAccessibilityPrompt = false
+        onboardingWindowLevelBeforeAccessibilityPrompt = nil
     }
 
     // MARK: - URL Handling (OAuth Callbacks)
@@ -1102,6 +1380,130 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     }
 }
 
+private struct MenuBarPopoverAnchorPolicy {
+    struct Resolution {
+        let isValid: Bool
+        let reason: String
+    }
+
+    static func resolve(button: NSStatusBarButton) -> Resolution {
+        guard let window = button.window else {
+            return Resolution(isValid: false, reason: "status-button-window-missing")
+        }
+
+        let frameInWindow = button.convert(button.bounds, to: nil)
+        let frameInScreen = window.convertToScreen(frameInWindow)
+        let screen = window.screen ?? NSScreen.main
+
+        guard frameInScreen.hasFiniteValues else {
+            return Resolution(isValid: false, reason: "anchor-frame-nonfinite")
+        }
+
+        guard frameInScreen.width > 2, frameInScreen.height > 2 else {
+            return Resolution(isValid: false, reason: "anchor-frame-too-small")
+        }
+
+        guard let screen else {
+            return Resolution(isValid: false, reason: "anchor-screen-missing")
+        }
+
+        let midpoint = NSPoint(x: frameInScreen.midX, y: frameInScreen.midY)
+        guard screen.frame.contains(midpoint) else {
+            return Resolution(isValid: false, reason: "anchor-outside-screen")
+        }
+
+        // Menu bar extras are on the right side. Frames resolving on the left
+        // half are usually stale/invalid status-item geometry.
+        guard frameInScreen.midX >= screen.frame.midX else {
+            return Resolution(isValid: false, reason: "anchor-left-half")
+        }
+
+        return Resolution(isValid: true, reason: "ok")
+    }
+}
+
+private extension NSRect {
+    var hasFiniteValues: Bool {
+        origin.x.isFinite && origin.y.isFinite && size.width.isFinite && size.height.isFinite
+    }
+}
+
+private final class OnboardingPanel: NSPanel {
+    convenience init(contentViewController: NSViewController) {
+        self.init(
+            contentRect: NSRect(x: 0, y: 0, width: 860, height: 660),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        self.contentViewController = contentViewController
+        isFloatingPanel = false
+        hidesOnDeactivate = false
+        titleVisibility = .hidden
+        titlebarAppearsTransparent = true
+    }
+
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+private final class OnboardingWindowDelegate: NSObject, NSWindowDelegate {
+    private weak var permissionManager: PermissionManager?
+    private weak var engineCoordinator: EngineCoordinatorViewModel?
+    private let onWindowWillClose: (() -> Void)?
+
+    init(
+        permissionManager: PermissionManager,
+        engineCoordinator: EngineCoordinatorViewModel,
+        onWindowWillClose: (() -> Void)? = nil
+    ) {
+        self.permissionManager = permissionManager
+        self.engineCoordinator = engineCoordinator
+        self.onWindowWillClose = onWindowWillClose
+    }
+
+    func windowShouldClose(_: NSWindow) -> Bool {
+        guard let permissionManager, let engineCoordinator else {
+            return true
+        }
+
+        if UserDefaults.standard.onboardingDeferredForModelDownload,
+           permissionManager.criticalPermissionsGranted,
+           !engineCoordinator.isModelsReady
+        {
+            return true
+        }
+
+        if permissionManager.criticalPermissionsGranted, engineCoordinator.isModelsReady {
+            return true
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Finish setup before closing?"
+        alert.informativeText = "Flowstay still needs required setup before it can transcribe reliably."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Continue Setup")
+        alert.addButton(withTitle: "Close Anyway")
+        alert.addButton(withTitle: "Quit App")
+
+        let response = alert.runModal()
+        switch response {
+        case .alertSecondButtonReturn:
+            return true
+        case .alertThirdButtonReturn:
+            NSApplication.shared.terminate(nil)
+            return false
+        default:
+            return false
+        }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        _ = notification
+        onWindowWillClose?()
+    }
+}
+
 private final class RecoveryWindowDelegate: NSObject, NSWindowDelegate {
     private let onWindowWillClose: (() -> Void)?
 
@@ -1112,53 +1514,6 @@ private final class RecoveryWindowDelegate: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         _ = notification
         onWindowWillClose?()
-    }
-}
-
-// MARK: - Recovery Window
-
-extension FlowstayAppDelegate {
-    func openRecoveryWindow() {
-        openRecoveryWindow(autoPresented: false)
-    }
-
-    func openRecoveryWindow(autoPresented: Bool) {
-        closePopover()
-
-        if let existingWindow = recoveryWindow, existingWindow.isVisible {
-            NSApp.activate(ignoringOtherApps: true)
-            existingWindow.makeKeyAndOrderFront(nil)
-            return
-        }
-
-        let recoveryView = RecoveryTroubleshootingView(
-            appState: appState,
-            autoPresented: autoPresented,
-            onContinue: { [weak self] in
-                self?.recoveryWindow?.close()
-            }
-        )
-
-        let hostingController = NSHostingController(rootView: recoveryView)
-        let window = NSWindow(contentViewController: hostingController)
-        window.title = "Flowstay Troubleshooting"
-        window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        window.backgroundColor = .windowBackgroundColor
-        window.setContentSize(NSSize(width: 760, height: 640))
-        let delegate = RecoveryWindowDelegate { [weak self] in
-            self?.recoveryWindow = nil
-            self?.recoveryWindowDelegate = nil
-        }
-        recoveryWindowDelegate = delegate
-        window.delegate = delegate
-        window.center()
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-
-        recoveryWindow = window
-        logger.info("[AppDelegate] Recovery troubleshooting window opened")
     }
 }
 

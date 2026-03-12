@@ -8,6 +8,11 @@ import SwiftUI
 
 /// Coordinates speech recognition engine lifecycle and manages recording state
 public class EngineCoordinatorViewModel: ObservableObject {
+    public enum PrewarmBehavior {
+        case modelsOnly
+        case modelsAndAudio
+    }
+
     @Published public var isRecording = false
     @Published public private(set) var isTransitioningRecordingState = false
     @Published public var currentTranscript = ""
@@ -21,6 +26,8 @@ public class EngineCoordinatorViewModel: ObservableObject {
     private var fluidAudioSpeechRecognition: FluidAudioSpeechRecognition?
     private var cancellables = Set<AnyCancellable>()
     private weak var appState: AppState?
+    private var modelPreparationTask: Task<Void, Never>?
+    private var recordingPipelinePrewarmTask: Task<Bool, Never>?
 
     // Callbacks
     /// SAFETY: nonisolated(unsafe) because this callback is set once during initialization
@@ -89,9 +96,28 @@ public class EngineCoordinatorViewModel: ObservableObject {
         fluidAudioSpeechRecognition?.areModelsCached() ?? false
     }
 
-    /// Pre-initialize all models during app startup to avoid first-run delays
-    /// Uses fast-path loading if models are already cached, otherwise downloads
-    public func preInitializeAllModels() async {
+    /// Pre-initialize all models during app startup to avoid first-run delays.
+    /// Uses fast-path loading if models are already cached, otherwise downloads.
+    public func preInitializeAllModels(prewarmBehavior: PrewarmBehavior = .modelsAndAudio) async {
+        if let modelPreparationTask {
+            print("[EngineCoordinatorViewModel] Joining in-flight model preparation task")
+            await modelPreparationTask.value
+            if prewarmBehavior == .modelsAndAudio {
+                _ = await prewarmRecordingPipelineIfNeeded()
+            }
+            return
+        }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await performModelPreparation(prewarmBehavior: prewarmBehavior)
+        }
+        modelPreparationTask = task
+        await task.value
+        modelPreparationTask = nil
+    }
+
+    private func performModelPreparation(prewarmBehavior: PrewarmBehavior) async {
         guard let fluidAudio = fluidAudioSpeechRecognition else {
             engineError = "Speech recognition engine not initialized"
             return
@@ -103,8 +129,8 @@ public class EngineCoordinatorViewModel: ObservableObject {
                 try await fluidAudio.loadModelsIfAvailable()
                 print("[EngineCoordinatorViewModel] ✅ Models loaded from cache (fast-path)")
                 isModelsReady = fluidAudio.isModelsReady
-                if isModelsReady {
-                    await fluidAudio.prewarmRecordingPipeline()
+                if isModelsReady, prewarmBehavior == .modelsAndAudio {
+                    _ = await prewarmRecordingPipelineIfNeeded()
                 }
                 engineError = nil
                 return
@@ -115,8 +141,8 @@ public class EngineCoordinatorViewModel: ObservableObject {
             // Fallback: Download and initialize if cache load failed
             try await fluidAudio.setupFluidAudio()
             isModelsReady = fluidAudio.isModelsReady
-            if isModelsReady {
-                await fluidAudio.prewarmRecordingPipeline()
+            if isModelsReady, prewarmBehavior == .modelsAndAudio {
+                _ = await prewarmRecordingPipelineIfNeeded()
             }
             engineError = nil
 
@@ -139,6 +165,29 @@ public class EngineCoordinatorViewModel: ObservableObject {
             engineError = "Model download failed: \(error.localizedDescription)"
             isModelsReady = false
         }
+    }
+
+    @discardableResult
+    public func prewarmRecordingPipelineIfNeeded() async -> Bool {
+        guard isModelsReady else {
+            return false
+        }
+
+        if let recordingPipelinePrewarmTask {
+            return await recordingPipelinePrewarmTask.value
+        }
+
+        let task = Task { [weak self] () -> Bool in
+            guard let self, self.isModelsReady, let fluidAudio = self.fluidAudioSpeechRecognition else {
+                return false
+            }
+
+            return await fluidAudio.prewarmRecordingPipeline()
+        }
+        recordingPipelinePrewarmTask = task
+        let didPrewarm = await task.value
+        recordingPipelinePrewarmTask = nil
+        return didPrewarm
     }
 
     public func setCallbacks(

@@ -94,18 +94,6 @@ if [ -f "Sources/Flowstay/AppIcon.icns" ]; then
     cp "Sources/Flowstay/AppIcon.icns" "$APP_DIR/Contents/Resources/"
 fi
 
-# Copy Icon Composer .icon directory for macOS Tahoe
-ICON_SRC=""
-if [ -d "Sources/Flowstay/Resources/Flowstay.icon" ]; then
-    ICON_SRC="Sources/Flowstay/Resources/Flowstay.icon"
-elif [ -d ".flowstay.icon" ]; then
-    ICON_SRC=".flowstay.icon"
-fi
-if [ -n "$ICON_SRC" ]; then
-    echo "Copying Icon Composer .icon..."
-    cp -R "$ICON_SRC" "$APP_DIR/Contents/Resources/"
-fi
-
 # Copy Sparkle framework from release build
 echo "Copying Sparkle framework..."
 mkdir -p "$APP_DIR/Contents/Frameworks"

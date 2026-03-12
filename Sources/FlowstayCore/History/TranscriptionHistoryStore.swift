@@ -32,30 +32,49 @@ public actor TranscriptionHistoryStore {
     public static let shared = TranscriptionHistoryStore()
 
     private let logger = Logger(subsystem: "com.flowstay.core", category: "TranscriptionHistory")
-    private let fileManager = FileManager.default
+    private let fileManager: FileManager
+    private let customHistoryDirectoryURL: URL?
+
+    init(
+        fileManager: FileManager = .default,
+        historyDirectoryURL: URL? = nil
+    ) {
+        self.fileManager = fileManager
+        customHistoryDirectoryURL = historyDirectoryURL
+    }
 
     // MARK: - Directory Management
 
     /// Get the history directory, creating it if needed
     private func historyDirectory() -> URL {
+        if let customHistoryDirectoryURL {
+            ensureHistoryDirectoryExists(at: customHistoryDirectoryURL)
+            return customHistoryDirectoryURL
+        }
+
         guard let appSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
             // Fallback to temp directory if Application Support is unavailable
             logger.error("[History] Application Support directory not available, using temp directory")
-            return fileManager.temporaryDirectory.appendingPathComponent("Flowstay/History", isDirectory: true)
+            let temporaryHistoryDirectory = fileManager.temporaryDirectory.appendingPathComponent("Flowstay/History", isDirectory: true)
+            ensureHistoryDirectoryExists(at: temporaryHistoryDirectory)
+            return temporaryHistoryDirectory
         }
         let flowstayDir = appSupport.appendingPathComponent("Flowstay", isDirectory: true)
         let historyDir = flowstayDir.appendingPathComponent("History", isDirectory: true)
 
-        if !fileManager.fileExists(atPath: historyDir.path) {
+        ensureHistoryDirectoryExists(at: historyDir)
+        return historyDir
+    }
+
+    private func ensureHistoryDirectoryExists(at url: URL) {
+        if !fileManager.fileExists(atPath: url.path) {
             do {
-                try fileManager.createDirectory(at: historyDir, withIntermediateDirectories: true)
-                logger.info("[History] Created history directory at \(historyDir.path)")
+                try fileManager.createDirectory(at: url, withIntermediateDirectories: true)
+                logger.info("[History] Created history directory at \(url.path)")
             } catch {
                 logger.error("[History] Failed to create history directory: \(error.localizedDescription)")
             }
         }
-
-        return historyDir
     }
 
     /// Get file path for a record

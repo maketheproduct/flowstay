@@ -244,10 +244,12 @@ public enum HotkeyPressMode: String, CaseIterable, Sendable {
         }
     }
 
-    static func initialMode(storedValue: String?) -> HotkeyPressMode {
+    static func initialMode(storedValue: String?, hasExistingOnboardingState: Bool) -> HotkeyPressMode {
         if let storedValue {
             return fromStoredValue(storedValue)
         }
+
+        let _ = hasExistingOnboardingState
         return .both
     }
 }
@@ -611,8 +613,13 @@ public class AppState: ObservableObject {
     }
 
     private static func resolveInitialHotkeyPressMode(defaults: UserDefaults) -> HotkeyPressMode {
-        HotkeyPressMode.initialMode(
-            storedValue: defaults.string(forKey: "hotkeyPressMode")
+        let hasExistingInstallSignals =
+            defaults.object(forKey: "hasCompletedOnboarding") != nil ||
+            defaults.object(forKey: "notificationPromptAttempted") != nil
+
+        return HotkeyPressMode.initialMode(
+            storedValue: defaults.string(forKey: "hotkeyPressMode"),
+            hasExistingOnboardingState: hasExistingInstallSignals
         )
     }
 
