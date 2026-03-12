@@ -1,6 +1,6 @@
 import Foundation
-import Sparkle
 import os
+import Sparkle
 
 /// Manages app updates using Sparkle framework
 @MainActor

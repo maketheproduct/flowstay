@@ -178,7 +178,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
         }
 
         let task = Task { [weak self] () -> Bool in
-            guard let self, self.isModelsReady, let fluidAudio = self.fluidAudioSpeechRecognition else {
+            guard let self, isModelsReady, let fluidAudio = fluidAudioSpeechRecognition else {
                 return false
             }
 

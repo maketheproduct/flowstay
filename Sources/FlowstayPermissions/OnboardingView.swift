@@ -69,7 +69,6 @@ public struct OnboardingView: View {
         }
     }
 
-    @ViewBuilder
     private func paneContent(theme: OnboardingTheme, profile: OnboardingSceneLayoutProfile) -> some View {
         ZStack {
             paneBackground(theme)
@@ -94,7 +93,6 @@ public struct OnboardingView: View {
         .shadow(color: theme.cardShadow.opacity(0.16), radius: 14, y: 8)
     }
 
-    @ViewBuilder
     private func paneBackground(_ theme: OnboardingTheme) -> some View {
         OnboardingPaneShape()
             .fill(.ultraThinMaterial)
@@ -121,7 +119,6 @@ public struct OnboardingView: View {
             }
     }
 
-    @ViewBuilder
     private func header(_ theme: OnboardingTheme) -> some View {
         VStack(spacing: 10) {
             HStack {
@@ -398,13 +395,12 @@ private struct ReadinessSceneView: View {
         return "Needed to dictate."
     }
 
-    @ViewBuilder
-    private func readinessRow<Accessory: View>(
+    private func readinessRow(
         title: String,
         subtitle: String,
         icon: String,
         iconColor: Color,
-        @ViewBuilder accessory: () -> Accessory
+        @ViewBuilder accessory: () -> some View
     ) -> some View {
         HStack(spacing: 14) {
             Image(systemName: icon)
@@ -525,7 +521,6 @@ private struct LiveDictationSceneView: View {
         }
     }
 
-    @ViewBuilder
     private var tutorialFooter: some View {
         HStack(spacing: 12) {
             if let firstWinError = coordinator.firstWinError {

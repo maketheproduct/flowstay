@@ -1,5 +1,5 @@
-import XCTest
 @testable import FlowstayPermissions
+import XCTest
 
 @MainActor
 final class OnboardingSceneLayoutProfileTests: XCTestCase {

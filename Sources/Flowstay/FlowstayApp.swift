@@ -1270,7 +1270,7 @@ extension FlowstayAppDelegate {
             appState: appState,
             onComplete: { [weak self] in
                 guard let self else { return }
-                self.logger.info("[AppDelegate] Onboarding completed - finalizing initialization")
+                logger.info("[AppDelegate] Onboarding completed - finalizing initialization")
                 Task { @MainActor in
                     await self.initService.finalizeInitialization()
                     self.onboardingWindow?.close()
@@ -1310,11 +1310,11 @@ extension FlowstayAppDelegate {
             engineCoordinator: engineCoordinator,
             onWindowWillClose: { [weak self] in
                 guard let self else { return }
-                self.onboardingWindow = nil
-                self.onboardingWindowDelegate = nil
-                self.clearOnboardingAccessibilityPromptState()
-                self.setOnboardingOverlayMode(.suppressed, reason: "onboarding-window-closed")
-                self.applyOverlayVisibility(reason: "onboarding-window-closed")
+                onboardingWindow = nil
+                onboardingWindowDelegate = nil
+                clearOnboardingAccessibilityPromptState()
+                setOnboardingOverlayMode(.suppressed, reason: "onboarding-window-closed")
+                applyOverlayVisibility(reason: "onboarding-window-closed")
             }
         )
         onboardingWindowDelegate = delegate
@@ -1387,7 +1387,7 @@ extension FlowstayAppDelegate {
     }
 }
 
-private struct MenuBarPopoverAnchorPolicy {
+private enum MenuBarPopoverAnchorPolicy {
     struct Resolution {
         let isValid: Bool
         let reason: String
@@ -1450,8 +1450,13 @@ private final class OnboardingPanel: NSPanel {
         titlebarAppearsTransparent = true
     }
 
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
+    override var canBecomeKey: Bool {
+        true
+    }
+
+    override var canBecomeMain: Bool {
+        true
+    }
 }
 
 private final class OnboardingWindowDelegate: NSObject, NSWindowDelegate {

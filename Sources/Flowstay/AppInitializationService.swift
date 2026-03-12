@@ -190,9 +190,9 @@ class AppInitializationService: ObservableObject {
                 let alert = NSAlert()
                 alert.messageText = "Directory Creation Failed"
                 alert.informativeText = """
-                    Flowstay couldn't create required directories. \
-                    Transcripts may not be saved. Error: \(error.localizedDescription)
-                    """
+                Flowstay couldn't create required directories. \
+                Transcripts may not be saved. Error: \(error.localizedDescription)
+                """
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "Continue Anyway")
                 alert.addButton(withTitle: "Quit")

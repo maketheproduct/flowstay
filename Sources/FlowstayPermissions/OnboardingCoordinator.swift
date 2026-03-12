@@ -44,7 +44,9 @@ struct TutorialKeyVisual: Identifiable {
     let label: String
     let state: TutorialKeyVisualState
 
-    var id: String { label }
+    var id: String {
+        label
+    }
 }
 
 enum ToggleShortcutHandlingPolicy {
@@ -77,6 +79,7 @@ final class OnboardingCoordinator: ObservableObject {
             handleSceneChange(from: oldValue, to: currentScene)
         }
     }
+
     @Published var navigationDirection: NavigationDirection = .forward
 
     @Published private(set) var microphoneStatus: PermissionStatus
@@ -443,7 +446,7 @@ final class OnboardingCoordinator: ObservableObject {
     }
 
     func beginModelPreparationIfNeeded(force: Bool) {
-        if !force, (modelReady || isPreparingModel) {
+        if !force, modelReady || isPreparingModel {
             return
         }
 
@@ -706,7 +709,7 @@ final class OnboardingCoordinator: ObservableObject {
         isHoldKeyPressed = false
         isToggleKeyPressed = false
 
-        if oldScene == .firstWin, (isRecordingFirstWin || engineCoordinator.isRecording) {
+        if oldScene == .firstWin, isRecordingFirstWin || engineCoordinator.isRecording {
             stopFirstWinRecording(mode: activeTutorialMode)
         }
     }
