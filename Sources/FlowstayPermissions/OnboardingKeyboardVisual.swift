@@ -179,7 +179,7 @@ private struct KeyboardClusterLayout {
         return [
             key(for: left, states: states, context: left != target),
             key(for: target, states: states, context: false),
-            key(for: right, states: states, context: right != target)
+            key(for: right, states: states, context: right != target),
         ]
     }
 
@@ -281,7 +281,9 @@ private struct KeyboardClusterKey: Identifiable {
     let state: TutorialKeyVisualState
     let isContext: Bool
 
-    var id: String { "\(label)-\(width)" }
+    var id: String {
+        "\(label)-\(width)"
+    }
 
     var fontSize: CGFloat {
         width >= 82 ? 12 : 13

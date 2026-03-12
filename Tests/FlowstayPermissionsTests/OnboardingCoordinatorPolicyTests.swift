@@ -1,5 +1,5 @@
-import XCTest
 @testable import FlowstayPermissions
+import XCTest
 
 final class OnboardingCoordinatorPolicyTests: XCTestCase {
     func testWelcomeAlwaysAllowsAdvance() {

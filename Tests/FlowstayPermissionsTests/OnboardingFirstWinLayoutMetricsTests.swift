@@ -1,6 +1,6 @@
 import CoreGraphics
-import XCTest
 @testable import FlowstayPermissions
+import XCTest
 
 @MainActor
 final class OnboardingFirstWinLayoutMetricsTests: XCTestCase {

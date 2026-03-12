@@ -614,9 +614,9 @@ private struct SettingsSwitch: View {
 
     var body: some View {
         Toggle("", isOn: $isOn)
-        .labelsHidden()
-        .toggleStyle(SettingsSwitchToggleStyle())
-        .fixedSize()
+            .labelsHidden()
+            .toggleStyle(SettingsSwitchToggleStyle())
+            .fixedSize()
     }
 }
 

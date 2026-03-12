@@ -1,5 +1,5 @@
-import KeyboardShortcuts
 @testable import FlowstayCore
+import KeyboardShortcuts
 import XCTest
 
 @MainActor
