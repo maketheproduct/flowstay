@@ -121,18 +121,29 @@ final class OnboardingHotkeyMonitor {
     }
 
     private func installFunctionKeyMonitors() {
-        functionKeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            Task { @MainActor [weak self] in
-                self?.handleFunctionKeyFlagsChanged(event)
-            }
+        let monitors = Self.makeFlagMonitors { [weak self] flags in
+            self?.handleFunctionKeyFlagsChanged(flags)
         }
+        functionKeyGlobalMonitor = monitors.global
+        functionKeyLocalMonitor = monitors.local
+    }
 
-        functionKeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
-            Task { @MainActor [weak self] in
-                self?.handleFunctionKeyFlagsChanged(event)
-            }
+    /// Creates NSEvent flag-change monitors without inheriting @MainActor isolation.
+    /// The handler receives only the modifier flags (a Sendable value type) extracted
+    /// before crossing the isolation boundary.
+    private nonisolated static func makeFlagMonitors(
+        handler: @MainActor @escaping (NSEvent.ModifierFlags) -> Void
+    ) -> (global: Any?, local: Any?) {
+        let global = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
+            let flags = event.modifierFlags
+            DispatchQueue.main.async { handler(flags) }
+        }
+        let local = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            let flags = event.modifierFlags
+            DispatchQueue.main.async { handler(flags) }
             return event
         }
+        return (global, local)
     }
 
     private func removeFunctionKeyMonitors() {
@@ -146,10 +157,10 @@ final class OnboardingHotkeyMonitor {
         }
     }
 
-    private func handleFunctionKeyFlagsChanged(_ event: NSEvent) {
+    private func handleFunctionKeyFlagsChanged(_ flags: NSEvent.ModifierFlags) {
         guard holdInputSource == .functionKey else { return }
 
-        let functionPressed = event.modifierFlags.contains(.function)
+        let functionPressed = flags.contains(.function)
         guard functionPressed != isHoldPressed else { return }
 
         isHoldPressed = functionPressed
