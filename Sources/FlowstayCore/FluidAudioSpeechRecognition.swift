@@ -480,8 +480,9 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             let lastSpeechDescription = stopDecision.timeSinceLastSpeechAtStop.map {
                 String(format: "%.3f", $0)
             } ?? "none"
+            let chosenDelayStr = String(format: "%.3f", stopDecision.delayBeforeTapRemoval)
             logger.debug(
-                "[FluidAudio] stop requested at \(stopRequestedAt.timeIntervalSince1970, privacy: .public); last speech delta: \(lastSpeechDescription, privacy: .public)s; chosen delay: \(String(format: "%.3f", stopDecision.delayBeforeTapRemoval), privacy: .public)s"
+                "[FluidAudio] stop requested; last speech delta: \(lastSpeechDescription, privacy: .public)s; delay: \(chosenDelayStr, privacy: .public)s"
             )
 
             // Step 1: Wait for audio tap to deliver remaining buffers and preserve short trailing speech.
@@ -599,8 +600,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                 let lastSpeechDescription = diagnostics.timeSinceLastSpeechAtStop.map {
                     String(format: "%.3f", $0)
                 } ?? "none"
+                let delayStr = String(format: "%.3f", diagnostics.chosenDelay)
+                let samples = diagnostics.finalChunkSampleCount
+                let textLen = trimmedText.count
                 logger.debug(
-                    "[FluidAudio] finalized stop requested at \(diagnostics.stopRequestedAt.timeIntervalSince1970, privacy: .public); last speech delta: \(lastSpeechDescription, privacy: .public)s; delay: \(String(format: "%.3f", diagnostics.chosenDelay), privacy: .public)s; final chunk samples: \(diagnostics.finalChunkSampleCount, privacy: .public); final transcript length: \(trimmedText.count, privacy: .public)"
+                    "[FluidAudio] finalized; speech delta: \(lastSpeechDescription, privacy: .public)s; delay: \(delayStr, privacy: .public)s; samples: \(samples, privacy: .public); text len: \(textLen, privacy: .public)"
                 )
             }
             onTranscriptionComplete?(trimmedText, metrics.totalDuration)

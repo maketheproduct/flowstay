@@ -3,6 +3,29 @@ import FlowstayCore
 import Foundation
 import SwiftUI
 
+enum OnboardingLaunchDecision {
+    case showOnboarding
+    case deferForModelDownload
+    case skip
+
+    static func resolve(
+        onboardingCompleted: Bool,
+        permissionsGranted: Bool,
+        modelDownloaded: Bool,
+        deferredForModelDownload: Bool
+    ) -> OnboardingLaunchDecision {
+        let needsPermissions = !permissionsGranted
+        let needsModel = !modelDownloaded
+        if deferredForModelDownload, needsModel, !needsPermissions {
+            return .deferForModelDownload
+        }
+        if !onboardingCompleted || needsPermissions || needsModel {
+            return .showOnboarding
+        }
+        return .skip
+    }
+}
+
 /// Service responsible for handling app initialization tasks
 /// including onboarding flow and first-time setup
 @MainActor
@@ -82,37 +105,29 @@ class AppInitializationService: ObservableObject {
     /// Check if critical requirements are met (permissions and model)
     /// If not, show onboarding automatically
     private func checkRequirements() async {
-        // Check permissions
         await permissionManager.checkPermissions()
 
-        // Check if model is downloaded
         let modelDownloaded = engineCoordinator.isModelDownloaded()
         if modelDownloaded {
             UserDefaults.standard.onboardingDeferredForModelDownload = false
         }
-        let needsPermissions = !permissionManager.criticalPermissionsGranted
-        let needsModel = !modelDownloaded
-        let onboardingDeferredForModelDownload = UserDefaults.standard.onboardingDeferredForModelDownload
-        let onboardingCompleted = UserDefaults.standard.hasCompletedOnboarding
 
-        if onboardingDeferredForModelDownload, needsModel, !needsPermissions {
+        let decision = OnboardingLaunchDecision.resolve(
+            onboardingCompleted: UserDefaults.standard.hasCompletedOnboarding,
+            permissionsGranted: permissionManager.criticalPermissionsGranted,
+            modelDownloaded: modelDownloaded,
+            deferredForModelDownload: UserDefaults.standard.onboardingDeferredForModelDownload
+        )
+
+        switch decision {
+        case .deferForModelDownload:
             print("[AppInitializationService] Onboarding deferred while model downloads in background")
             startDeferredOnboardingResumeIfNeeded()
-            return
-        }
-
-        if !onboardingCompleted {
-            print("[AppInitializationService] Onboarding incomplete - showing onboarding")
+        case .showOnboarding:
+            print("[AppInitializationService] Requirements incomplete - showing onboarding")
             await showOnboardingWindow()
-            return
-        }
-
-        // If requirements are missing, trigger onboarding
-        if needsPermissions || needsModel {
-            print("[AppInitializationService] Missing requirements - showing onboarding")
-            print("  - Needs permissions: \(needsPermissions)")
-            print("  - Needs model: \(needsModel)")
-            await showOnboardingWindow()
+        case .skip:
+            break
         }
     }
 
@@ -120,8 +135,6 @@ class AppInitializationService: ObservableObject {
     func initializeApp() async {
         print("[AppInitializationService] Starting app initialization...")
         StartupRecoveryManager.shared.markStage(.appInitializationStarted)
-
-        let isFirstLaunch = !UserDefaults.standard.hasCompletedOnboarding
 
         // Check permissions first before attempting directory creation
         await permissionManager.checkPermissions()
@@ -146,26 +159,23 @@ class AppInitializationService: ObservableObject {
             UserDefaults.standard.onboardingDeferredForModelDownload = false
         }
 
-        // Check if this is first launch or permissions are missing
-        let needsPermissions = !permissionManager.criticalPermissionsGranted
-        let needsModel = !modelDownloaded
-        let onboardingDeferredForModelDownload = UserDefaults.standard.onboardingDeferredForModelDownload
-        let shouldDeferOnboarding = onboardingDeferredForModelDownload && needsModel && !needsPermissions
+        let decision = OnboardingLaunchDecision.resolve(
+            onboardingCompleted: onboardingCompleted,
+            permissionsGranted: permissionManager.criticalPermissionsGranted,
+            modelDownloaded: modelDownloaded,
+            deferredForModelDownload: UserDefaults.standard.onboardingDeferredForModelDownload
+        )
 
-        print("[AppInitializationService] Launch status:")
-        print("  - First launch: \(isFirstLaunch)")
-        print("  - Needs permissions: \(needsPermissions)")
-        print("  - Needs model: \(needsModel)")
-        print("  - Deferred for model download: \(onboardingDeferredForModelDownload)")
+        print("[AppInitializationService] Launch decision: \(decision)")
 
-        if shouldDeferOnboarding {
+        switch decision {
+        case .deferForModelDownload:
             startDeferredOnboardingResumeIfNeeded()
-        }
-
-        // Show onboarding if it's first launch, permissions are missing, or model isn't downloaded
-        if !shouldDeferOnboarding, (isFirstLaunch || needsPermissions || needsModel) {
+        case .showOnboarding:
             print("[AppInitializationService] Triggering onboarding window...")
             await showOnboardingWindow()
+        case .skip:
+            break
         }
 
         // Create app directories after onboarding (this may trigger document access permission)
@@ -179,7 +189,10 @@ class AppInitializationService: ObservableObject {
             await MainActor.run {
                 let alert = NSAlert()
                 alert.messageText = "Directory Creation Failed"
-                alert.informativeText = "Flowstay couldn't create required directories in ~/Library/Application Support/. Transcripts may not be saved. Error: \(error.localizedDescription)"
+                alert.informativeText = """
+                    Flowstay couldn't create required directories. \
+                    Transcripts may not be saved. Error: \(error.localizedDescription)
+                    """
                 alert.alertStyle = .warning
                 alert.addButton(withTitle: "Continue Anyway")
                 alert.addButton(withTitle: "Quit")
@@ -210,7 +223,6 @@ class AppInitializationService: ObservableObject {
 
         StartupRecoveryManager.shared.markStage(.appInitializationCompleted)
         hasInitialized = true
-        StartupRecoveryManager.shared.markStage(.appInitializationCompleted)
         print("[AppInitializationService] App initialization complete")
     }
 
