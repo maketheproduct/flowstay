@@ -265,7 +265,9 @@ final class RecoverySupportTests: XCTestCase {
 
     private func encodedShortcut(_ key: KeyboardShortcuts.Key, modifiers: NSEvent.ModifierFlags) -> String {
         let shortcut = KeyboardShortcuts.Shortcut(key, modifiers: modifiers)
-        let data = try? JSONEncoder().encode(shortcut)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        let data = try? encoder.encode(shortcut)
         return String(data: data ?? Data(), encoding: .utf8) ?? ""
     }
 }
