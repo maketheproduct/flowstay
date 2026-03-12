@@ -1007,9 +1007,37 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
-    // MARK: - Popover Control
+    // MARK: - URL Handling (OAuth Callbacks)
 
-    @objc private func togglePopover() {
+    private func registerForURLEvents() {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+        logger.info("[AppDelegate] Registered for URL events")
+    }
+
+    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
+        guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: urlString)
+        else {
+            logger.info("[AppDelegate] Invalid URL event received")
+            return
+        }
+
+        logger.info("[AppDelegate] URL event received: \(url.scheme ?? "unknown")://\(url.host ?? "")\(url.path)")
+
+        // Note: OpenRouter OAuth now uses localhost:3000 callback server instead of URL scheme
+        // This handler remains for potential future URL scheme integrations
+    }
+}
+
+// MARK: - Popover Control
+
+extension FlowstayAppDelegate {
+    @objc func togglePopover() {
         if popover.isShown {
             closePopover()
         } else {
@@ -1021,11 +1049,9 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         showPopover(retryCount: 0, forceOnFailure: false)
     }
 
-    private func showPopover(retryCount: Int, forceOnFailure: Bool) {
+    func showPopover(retryCount: Int, forceOnFailure: Bool) {
         guard let button = statusItem?.button else { return }
 
-        // Ensure button's window is ready for accurate positioning
-        // On first show after launch, the button may not have its window set
         guard button.window != nil else {
             guard retryCount < 3 else {
                 if forceOnFailure {
@@ -1041,17 +1067,14 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             return
         }
 
-        // Trigger ObservableObject refresh to ensure view shows latest data
         appState.objectWillChange.send()
         engineCoordinator.objectWillChange.send()
 
-        // Force layout to ensure size is calculated correctly
         let popoverSize = preferredPopoverSize()
         let appearance = button.window?.effectiveAppearance ?? button.effectiveAppearance
         installPopoverContent(size: popoverSize, appearance: appearance)
         popover.contentViewController?.view.layoutSubtreeIfNeeded()
 
-        // Activate app BEFORE showing popover (better focus handling)
         NSApp.activate(ignoringOtherApps: true)
 
         let anchorResolution = MenuBarPopoverAnchorPolicy.resolve(button: button)
@@ -1078,7 +1101,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         popover.performClose(nil)
     }
 
-    private func preferredPopoverSize() -> CGSize {
+    func preferredPopoverSize() -> CGSize {
         MenuBarView.preferredPopoverSize(
             criticalPermissionsGranted: permissionManager.criticalPermissionsGranted,
             onboardingComplete: UserDefaults.standard.hasCompletedOnboarding,
@@ -1088,14 +1111,16 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         )
     }
 
-    private func showMenuBarClickGuidance(reason: String) {
+    func showMenuBarClickGuidance(reason: String) {
         let now = Date()
         if let lastPopoverGuidanceAt, now.timeIntervalSince(lastPopoverGuidanceAt) < 5 {
             return
         }
         lastPopoverGuidanceAt = now
 
-        logger.warning("[AppDelegate] Popover anchor invalid after retries (reason: \(reason, privacy: .public))")
+        logger.warning(
+            "[AppDelegate] Popover anchor invalid after retries (reason: \(reason, privacy: .public))"
+        )
 
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
@@ -1106,8 +1131,10 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         alert.runModal()
     }
 
-    private func forceShowPopover(button: NSStatusBarButton, reason: String) {
-        logger.warning("[AppDelegate] Forcing popover presentation (reason: \(reason, privacy: .public))")
+    func forceShowPopover(button: NSStatusBarButton, reason: String) {
+        logger.warning(
+            "[AppDelegate] Forcing popover presentation (reason: \(reason, privacy: .public))"
+        )
         NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
@@ -1124,32 +1151,6 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
 
         handleHotkeyToggleRequested()
-    }
-
-    // MARK: - URL Handling (OAuth Callbacks)
-
-    private func registerForURLEvents() {
-        NSAppleEventManager.shared().setEventHandler(
-            self,
-            andSelector: #selector(handleURLEvent(_:withReplyEvent:)),
-            forEventClass: AEEventClass(kInternetEventClass),
-            andEventID: AEEventID(kAEGetURL)
-        )
-        logger.info("[AppDelegate] Registered for URL events")
-    }
-
-    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
-        guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
-              let url = URL(string: urlString)
-        else {
-            logger.info("[AppDelegate] Invalid URL event received")
-            return
-        }
-
-        logger.info("[AppDelegate] URL event received: \(url.scheme ?? "unknown")://\(url.host ?? "")\(url.path)")
-
-        // Note: OpenRouter OAuth now uses localhost:3000 callback server instead of URL scheme
-        // This handler remains for potential future URL scheme integrations
     }
 }
 
