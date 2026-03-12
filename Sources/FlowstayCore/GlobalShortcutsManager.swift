@@ -99,18 +99,11 @@ public class GlobalShortcutsManager {
         startToggleShortcutListener()
         startHoldShortcutListener()
 
-        functionKeyGlobalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
-            Task { @MainActor in
-                handleFunctionKeyFlagsChanged(event)
-            }
+        let monitors = Self.makeFlagMonitors { flags in
+            handleFunctionKeyFlagsChanged(flags)
         }
-
-        functionKeyLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
-            Task { @MainActor in
-                handleFunctionKeyFlagsChanged(event)
-            }
-            return event
-        }
+        functionKeyGlobalMonitor = monitors.global
+        functionKeyLocalMonitor = monitors.local
 
         print("[GlobalShortcutsManager] Global hotkey listener registered")
     }
@@ -196,8 +189,25 @@ public class GlobalShortcutsManager {
         return holdShortcut == toggleShortcut
     }
 
-    private static func handleFunctionKeyFlagsChanged(_ event: NSEvent) {
-        let functionPressedNow = event.modifierFlags.contains(.function)
+    /// Creates NSEvent flag-change monitors without inheriting @MainActor isolation.
+    /// Extracts modifier flags (a Sendable value type) before crossing the isolation boundary.
+    private nonisolated static func makeFlagMonitors(
+        handler: @MainActor @escaping (NSEvent.ModifierFlags) -> Void
+    ) -> (global: Any?, local: Any?) {
+        let global = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { event in
+            let flags = event.modifierFlags
+            DispatchQueue.main.async { handler(flags) }
+        }
+        let local = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+            let flags = event.modifierFlags
+            DispatchQueue.main.async { handler(flags) }
+            return event
+        }
+        return (global, local)
+    }
+
+    private static func handleFunctionKeyFlagsChanged(_ flags: NSEvent.ModifierFlags) {
+        let functionPressedNow = flags.contains(.function)
         guard functionPressedNow != isFunctionKeyPressed else { return }
 
         isFunctionKeyPressed = functionPressedNow

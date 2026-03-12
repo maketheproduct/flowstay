@@ -27,17 +27,30 @@ public class AppDetectionService: ObservableObject {
     @Published public private(set) var currentApp: DetectedApp?
     private let logger = Logger(subsystem: "com.flowstay.core", category: "AppDetection")
 
+    private nonisolated(unsafe) var activationObserver: NSObjectProtocol?
+
     private init() {
         // Subscribe to app activation notifications
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self,
-            selector: #selector(appDidActivate(_:)),
-            name: NSWorkspace.didActivateApplicationNotification,
-            object: nil
-        )
+        // Use block-based API with DispatchQueue.main to avoid @MainActor/@objc crash
+        // when the notification is delivered from a non-main thread (macOS 26+).
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.detectFrontmostApp()
+            }
+        }
 
         // Initial detection
         detectFrontmostApp()
+    }
+
+    deinit {
+        if let activationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(activationObserver)
+        }
     }
 
     /// Detect the currently frontmost application
@@ -94,7 +107,4 @@ public class AppDetectionService: ObservableObject {
         return bitmapRep.representation(using: .png, properties: [:])
     }
 
-    @objc private func appDidActivate(_: Notification) {
-        detectFrontmostApp()
-    }
 }
