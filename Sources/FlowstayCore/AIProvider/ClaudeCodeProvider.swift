@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import os
 
@@ -321,9 +322,34 @@ public final nonisolated class ClaudeCodeProvider: AIProviderProtocol, Sendable 
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe
 
+                let stdoutHandle = stdoutPipe.fileHandleForReading
+                let stderrHandle = stderrPipe.fileHandleForReading
+                let stdoutBuffer = CommandOutputBuffer()
+                let stderrBuffer = CommandOutputBuffer()
+
+                stdoutHandle.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        return
+                    }
+                    stdoutBuffer.append(data)
+                }
+
+                stderrHandle.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if data.isEmpty {
+                        handle.readabilityHandler = nil
+                        return
+                    }
+                    stderrBuffer.append(data)
+                }
+
                 do {
                     try process.run()
                 } catch {
+                    stdoutHandle.readabilityHandler = nil
+                    stderrHandle.readabilityHandler = nil
                     continuation.resume(throwing: error)
                     return
                 }
@@ -332,19 +358,33 @@ public final nonisolated class ClaudeCodeProvider: AIProviderProtocol, Sendable 
                 while process.isRunning {
                     if Date() >= deadline {
                         process.terminate()
-                        process.waitUntilExit()
+                        let forcedExitDeadline = Date().addingTimeInterval(1)
+                        while process.isRunning, Date() < forcedExitDeadline {
+                            Thread.sleep(forTimeInterval: 0.05)
+                        }
+                        if process.isRunning {
+                            kill(process.processIdentifier, SIGKILL)
+                            process.waitUntilExit()
+                        }
+                        stdoutHandle.readabilityHandler = nil
+                        stderrHandle.readabilityHandler = nil
+                        stdoutBuffer.append(stdoutHandle.readDataToEndOfFile())
+                        stderrBuffer.append(stderrHandle.readDataToEndOfFile())
                         continuation.resume(throwing: AIProviderError.timeout)
                         return
                     }
                     Thread.sleep(forTimeInterval: 0.05)
                 }
 
-                let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                stdoutHandle.readabilityHandler = nil
+                stderrHandle.readabilityHandler = nil
+                stdoutBuffer.append(stdoutHandle.readDataToEndOfFile())
+                stderrBuffer.append(stderrHandle.readDataToEndOfFile())
                 let output = ClaudeCommandResult(
                     terminationStatus: process.terminationStatus,
-                    stdout: String(decoding: stdoutData, as: UTF8.self),
-                    stderr: String(decoding: stderrData, as: UTF8.self)
+                    stdout: String(decoding: stdoutBuffer.snapshot(), as: UTF8.self),
+                    stderr: String(decoding: stderrBuffer.snapshot(), as: UTF8.self)
                 )
                 continuation.resume(returning: output)
             }
@@ -413,4 +453,22 @@ private struct ClaudeCommandResult: Sendable {
     let terminationStatus: Int32
     let stdout: String
     let stderr: String
+}
+
+private final nonisolated class CommandOutputBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        guard !chunk.isEmpty else { return }
+        lock.lock()
+        data.append(chunk)
+        lock.unlock()
+    }
+
+    func snapshot() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
 }

@@ -202,6 +202,11 @@ public enum OverlayOutcomeState: Equatable, Sendable {
     case error
 }
 
+public enum OnboardingOverlayMode: Equatable, Sendable {
+    case suppressed
+    case followRuntime
+}
+
 public enum OverlayVisibilityPhase: String, Equatable, Sendable {
     case hidden
     case recording
@@ -211,9 +216,38 @@ public enum OverlayVisibilityPhase: String, Equatable, Sendable {
     case outcomeError
 }
 
+public struct OverlayEnablementInput: Equatable, Sendable {
+    public var userPreferenceEnabled: Bool
+    public var onboardingVisible: Bool
+    public var onboardingOverlayMode: OnboardingOverlayMode
+
+    public init(
+        userPreferenceEnabled: Bool,
+        onboardingVisible: Bool,
+        onboardingOverlayMode: OnboardingOverlayMode
+    ) {
+        self.userPreferenceEnabled = userPreferenceEnabled
+        self.onboardingVisible = onboardingVisible
+        self.onboardingOverlayMode = onboardingOverlayMode
+    }
+}
+
+public enum OverlayEnablementPolicy {
+    public static func resolve(_ input: OverlayEnablementInput) -> Bool {
+        guard input.userPreferenceEnabled else { return false }
+
+        if !input.onboardingVisible {
+            return true
+        }
+
+        return input.onboardingOverlayMode == .followRuntime
+    }
+}
+
 public struct OverlayVisibilityInput: Equatable, Sendable {
     public var overlayEnabled: Bool
     public var isRecording: Bool
+    public var isTransitioningToRecording: Bool
     public var isHotkeyStartPending: Bool
     public var isQueuedWarmup: Bool
     public var isAwaitingCompletion: Bool
@@ -223,6 +257,7 @@ public struct OverlayVisibilityInput: Equatable, Sendable {
     public init(
         overlayEnabled: Bool,
         isRecording: Bool,
+        isTransitioningToRecording: Bool,
         isHotkeyStartPending: Bool,
         isQueuedWarmup: Bool,
         isAwaitingCompletion: Bool,
@@ -231,6 +266,7 @@ public struct OverlayVisibilityInput: Equatable, Sendable {
     ) {
         self.overlayEnabled = overlayEnabled
         self.isRecording = isRecording
+        self.isTransitioningToRecording = isTransitioningToRecording
         self.isHotkeyStartPending = isHotkeyStartPending
         self.isQueuedWarmup = isQueuedWarmup
         self.isAwaitingCompletion = isAwaitingCompletion
@@ -247,12 +283,12 @@ public enum OverlayVisibilityPolicy {
             return .recording
         }
 
-        if input.isHotkeyStartPending || input.isQueuedWarmup {
-            return .warming
-        }
-
         if input.isAwaitingCompletion {
             return .processing
+        }
+
+        if input.isTransitioningToRecording || input.isHotkeyStartPending || input.isQueuedWarmup {
+            return .warming
         }
 
         if let outcomeState = input.outcomeState,

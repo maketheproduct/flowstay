@@ -18,11 +18,13 @@ public protocol KeychainServiceProtocol: Sendable {
 public final nonisolated class KeychainService: KeychainServiceProtocol, @unchecked Sendable {
     public static let shared = KeychainService()
 
-    private let serviceName = "com.flowstay.Flowstay"
+    private let serviceName: String
     private let queue = DispatchQueue(label: "com.flowstay.keychain", qos: .userInitiated)
     private let logger = Logger(subsystem: "com.flowstay.core", category: "KeychainService")
 
-    private init() {}
+    init(serviceName: String = "com.flowstay.Flowstay") {
+        self.serviceName = serviceName
+    }
 
     public func saveAPIKey(_ key: String, for provider: String) async {
         await withCheckedContinuation { continuation in

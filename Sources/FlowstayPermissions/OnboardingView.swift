@@ -1,649 +1,830 @@
 import AppKit
 import FlowstayCore
+import KeyboardShortcuts
 import SwiftUI
-import UserNotifications
 
 public struct OnboardingView: View {
     @ObservedObject var permissionManager: PermissionManager
     let engineCoordinator: EngineCoordinatorViewModel
     let onComplete: (() -> Void)?
-    @Environment(\.dismiss) private var dismiss
+    let onOverlayModeChange: ((OnboardingOverlayMode) -> Void)?
 
-    @State private var currentStep = 0
-    @State private var isDownloadingModel = false
-    @State private var modelDownloadComplete = false
-    @State private var showExitWarning = false
-    @State private var notificationPermissionGranted = false
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var coordinator: OnboardingCoordinator
 
     public init(
         permissionManager: PermissionManager,
         engineCoordinator: EngineCoordinatorViewModel,
-        appState _: AppState,
-        onComplete: (() -> Void)? = nil
+        appState: AppState,
+        onComplete: (() -> Void)? = nil,
+        onOverlayModeChange: ((OnboardingOverlayMode) -> Void)? = nil,
+        onAccessibilityPromptWillPresent: (@MainActor () async -> Void)? = nil,
+        onAccessibilityPromptDidComplete: (@MainActor (Bool) -> Void)? = nil
     ) {
         self.permissionManager = permissionManager
         self.engineCoordinator = engineCoordinator
         self.onComplete = onComplete
-    }
-
-    private var canExit: Bool {
-        // Can only exit if critical steps are complete
-        permissionManager.criticalPermissionsGranted && modelDownloadComplete
+        self.onOverlayModeChange = onOverlayModeChange
+        _coordinator = StateObject(
+            wrappedValue: OnboardingCoordinator(
+                permissionManager: permissionManager,
+                engineCoordinator: engineCoordinator,
+                appState: appState,
+                onAccessibilityPromptWillPresent: onAccessibilityPromptWillPresent,
+                onAccessibilityPromptDidComplete: onAccessibilityPromptDidComplete
+            )
+        )
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            // Progress indicator (6 steps: 0, 1, 2, 3, 4, 5)
-            ProgressView(value: Double(currentStep), total: 5)
-                .progressViewStyle(.linear)
-                .padding()
+        let theme = OnboardingTheme.resolve(for: colorScheme)
+        let profile = OnboardingSceneLayoutProfile.resolve(for: coordinator.currentScene)
 
-            // Content
-            TabView(selection: $currentStep) {
-                WelcomeCard()
-                    .tag(0)
+        ZStack {
+            Color.clear
+                .ignoresSafeArea()
 
-                MicrophonePermissionCard(permissionManager: permissionManager)
-                    .tag(1)
+            Circle()
+                .fill(theme.ambientGlow)
+                .frame(width: 260, height: 260)
+                .blur(radius: 48)
+                .offset(x: -190, y: -210)
+                .allowsHitTesting(false)
 
-                AccessibilityPermissionCard(
-                    permissionManager: permissionManager,
-                    onSkip: {
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            currentStep = 3
-                        }
-                    }
-                )
-                .tag(2)
+            paneContent(theme: theme, profile: profile)
+                .padding(4)
+        }
+        .frame(width: 860, height: 660)
+        .onAppear {
+            coordinator.onAppear()
+            onOverlayModeChange?(coordinator.overlayMode)
+        }
+        .onChange(of: coordinator.overlayMode) { _, newMode in
+            onOverlayModeChange?(newMode)
+        }
+        .onDisappear {
+            onOverlayModeChange?(.suppressed)
+            coordinator.cleanup()
+        }
+    }
 
-                NotificationPermissionCard(
-                    permissionGranted: $notificationPermissionGranted
-                )
-                .tag(3)
+    @ViewBuilder
+    private func paneContent(theme: OnboardingTheme, profile: OnboardingSceneLayoutProfile) -> some View {
+        ZStack {
+            paneBackground(theme)
 
-                ModelDownloadCard(
-                    engineCoordinator: engineCoordinator,
-                    isDownloading: $isDownloadingModel,
-                    downloadComplete: $modelDownloadComplete,
-                    onDownloadComplete: {
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            currentStep = 5
-                        }
-                    }
-                )
-                .tag(4)
+            VStack(spacing: 16) {
+                header(theme)
+                    .padding(.horizontal, 28)
+                    .padding(.top, 28)
 
-                CompletionCard(onComplete: {
-                    print("[OnboardingView] Completion card - calling onComplete callback")
-                    onComplete?()
-                    print("[OnboardingView] Dismissing onboarding window")
-                    dismiss()
-                })
-                .tag(5)
+                sceneView(theme)
+                    .id(coordinator.currentScene.rawValue)
+                    .frame(maxWidth: profile.maxWidth, maxHeight: .infinity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: profile.containerAlignment)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 28)
+                    .transition(sceneTransition)
             }
-            .tabViewStyle(.automatic)
-            .animation(.easeInOut(duration: 0.3), value: currentStep)
-            .onAppear {
-                // Start downloading models in background as soon as onboarding appears
-                startBackgroundModelDownload()
-            }
+        }
+        .clipShape(OnboardingPaneShape())
+        .contentShape(OnboardingPaneShape())
+        .compositingGroup()
+        .shadow(color: theme.cardShadow.opacity(0.16), radius: 14, y: 8)
+    }
 
-            // Navigation buttons
+    @ViewBuilder
+    private func paneBackground(_ theme: OnboardingTheme) -> some View {
+        OnboardingPaneShape()
+            .fill(.ultraThinMaterial)
+            .overlay {
+                OnboardingPaneShape()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                theme.backgroundGradientStart.opacity(0.84),
+                                theme.backgroundGradientEnd.opacity(0.78),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+            }
+            .overlay(alignment: .topLeading) {
+                Circle()
+                    .fill(theme.cardHighlight.opacity(0.08))
+                    .frame(width: 220, height: 220)
+                    .blur(radius: 38)
+                    .offset(x: -34, y: -68)
+                    .allowsHitTesting(false)
+            }
+    }
+
+    @ViewBuilder
+    private func header(_ theme: OnboardingTheme) -> some View {
+        VStack(spacing: 10) {
             HStack {
-                Button("Previous") {
-                    withAnimation {
-                        currentStep -= 1
+                if coordinator.canGoBack {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            coordinator.moveBack()
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(theme.secondaryText)
+                            .frame(width: 28, height: 28)
+                            .background(theme.surface, in: Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(theme.cardBorder, lineWidth: 0.8)
+                            )
                     }
+                    .buttonStyle(.plain)
+                } else {
+                    Color.clear
+                        .frame(width: 28, height: 28)
                 }
-                .disabled(currentStep == 0)
 
                 Spacer()
+            }
 
-                if currentStep < 5 {
-                    Button("Next") {
-                        withAnimation {
-                            if currentStep < 5 {
-                                // Skip download step if models are already ready
-                                if currentStep == 3, modelDownloadComplete {
-                                    currentStep = 5
-                                } else {
-                                    currentStep += 1
-                                }
-                            }
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(currentStep == 4 && !modelDownloadComplete) // Can't proceed until model downloads
+            HStack(spacing: 6) {
+                ForEach(OnboardingScene.allCases, id: \.rawValue) { scene in
+                    Capsule()
+                        .fill(
+                            scene.rawValue <= coordinator.currentScene.rawValue
+                                ? theme.accent.opacity(0.78)
+                                : theme.cardBorder.opacity(0.72)
+                        )
+                        .frame(height: 4)
                 }
             }
-            .padding()
-        }
-        .frame(width: 600, height: 500)
-        .interactiveDismissDisabled(!canExit)
-        .alert("Exit onboarding?", isPresented: $showExitWarning) {
-            Button("Cancel", role: .cancel) {}
-            Button("Exit app", role: .destructive) {
-                NSApplication.shared.terminate(nil)
-            }
-        } message: {
-            Text("Completing onboarding is required for Flowstay to work. If you exit now, you'll need to complete onboarding the next time you launch the app.")
+            .frame(maxWidth: 340)
         }
     }
 
-    private func startBackgroundModelDownload() {
-        // Check if models are already downloaded AND initialized
-        if engineCoordinator.isModelDownloaded(), engineCoordinator.isModelsReady {
-            modelDownloadComplete = true
-            return
-        }
-
-        // Start download/initialization in background
-        isDownloadingModel = true
-        Task {
-            await engineCoordinator.preInitializeAllModels()
-            await MainActor.run {
-                isDownloadingModel = false
-                if engineCoordinator.engineError == nil {
-                    modelDownloadComplete = true
-
-                    // GlobalShortcutsManager will be initialized in finalizeInitialization()
-                    // after onboarding completes to avoid redundant initialization
-
-                    // Send notification when download completes
-                    sendModelReadyNotification()
-
-                    // Auto-advance if user is on the download step
-                    if currentStep == 4 {
-                        withAnimation(.easeInOut(duration: 0.3)) {
-                            currentStep = 5
-                        }
-                    }
-                }
+    @ViewBuilder
+    private func sceneView(_ theme: OnboardingTheme) -> some View {
+        switch coordinator.currentScene {
+        case .welcome:
+            WelcomeSceneView(theme: theme) {
+                advance()
+            }
+        case .readiness:
+            ReadinessSceneView(theme: theme, coordinator: coordinator, onContinue: {
+                advance()
+            }, onDefer: {
+                coordinator.deferOnboardingUntilModelReady()
+                dismiss()
+            })
+        case .firstWin:
+            LiveDictationSceneView(theme: theme, coordinator: coordinator) {
+                advance()
+            }
+        case .quickSetup:
+            QuickSetupSceneView(theme: theme, coordinator: coordinator) {
+                advance()
+            }
+        case .done:
+            DoneSceneView(theme: theme, coordinator: coordinator) {
+                completeOnboarding()
             }
         }
     }
 
-    private func sendModelReadyNotification() {
-        Task { @MainActor in
-            // Only send notification if user granted permission
-            guard notificationPermissionGranted else {
-                print("[OnboardingView] Skipping model ready notification - permissions not granted")
-                return
-            }
+    private var sceneTransition: AnyTransition {
+        .asymmetric(
+            insertion: .opacity.combined(with: .scale(scale: 0.985, anchor: .center)),
+            removal: .opacity
+        )
+    }
 
-            NotificationManager.shared.sendNotification(
-                title: "Model installed!",
-                body: "Try transcribing with Option + Space",
-                identifier: "model-ready"
-            )
+    private func advance() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            coordinator.moveNext()
         }
+    }
+
+    private func completeOnboarding() {
+        guard coordinator.canCompleteOnboarding else { return }
+
+        UserDefaults.standard.hasCompletedOnboarding = true
+        onComplete?()
     }
 }
 
-struct WelcomeCard: View {
+private struct WelcomeSceneView: View {
+    let theme: OnboardingTheme
+    let onStart: () -> Void
+
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 22) {
+            appIcon
+
+            VStack(spacing: 8) {
+                Text("Speak where you work")
+                    .font(.albertSans(42, weight: .semibold))
+                    .foregroundStyle(theme.primaryText)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button("Start setup") {
+                onStart()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(theme.accent)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+
+    private var appIcon: some View {
+        Group {
             if let appIcon = NSImage(named: "AppIcon") {
                 Image(nsImage: appIcon)
                     .resizable()
-                    .frame(width: 80, height: 80)
             } else {
-                Image(systemName: "mic.circle.fill")
-                    .font(.system(size: 80))
-                    .foregroundStyle(Color.flowstayBlue)
+                Image(systemName: "waveform.badge.mic")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(18)
+                    .foregroundStyle(theme.accent)
             }
-
-            Text("Welcome to Flowstay")
-                .font(.albertSans(34, weight: .semibold))
-
-            Text("Stay in your flow state")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 400)
-
-            VStack(alignment: .leading, spacing: 16) {
-                FeatureRow(icon: "lock.fill", title: "Privacy first", subtitle: "Everything stays on your Mac")
-                FeatureRow(icon: "mic.badge.plus", title: "Multilingual speech recognition", subtitle: "Supports 25 European languages")
-                FeatureRow(icon: "keyboard", title: "Auto-paste", subtitle: "Seamlessly insert text into any app")
-            }
-            .padding(.top)
         }
-        .padding()
+        .frame(width: 92, height: 92)
+        .shadow(color: theme.ambientGlow, radius: 16)
     }
 }
 
-struct MicrophonePermissionCard: View {
-    @ObservedObject var permissionManager: PermissionManager
-    @State private var isRequesting = false
+private struct ReadinessSceneView: View {
+    let theme: OnboardingTheme
+    @ObservedObject var coordinator: OnboardingCoordinator
+    let onContinue: () -> Void
+    let onDefer: () -> Void
 
     var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: 60))
-                .foregroundStyle(permissionManager.hasMicrophonePermission ? .green : Color.flowstayBlue)
-                .scaleEffect(permissionManager.hasMicrophonePermission ? 1.1 : 1.0)
-                .animation(.spring(), value: permissionManager.hasMicrophonePermission)
+        VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Get ready")
+                    .font(.albertSans(30, weight: .semibold))
+                    .foregroundStyle(theme.primaryText)
 
-            Text("Microphone access")
-                .font(.albertSans(24, weight: .semibold))
-
-            Text("Flowstay needs your microphone to transcribe your voice. Your data never leaves your Mac.")
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 400)
-
-            if permissionManager.hasMicrophonePermission {
-                Label("Access granted", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .transition(.scale.combined(with: .opacity))
-            } else {
-                Button(action: {
-                    isRequesting = true
-                    Task {
-                        await permissionManager.requestMicrophonePermission()
-                        // Poll for permission changes
-                        for _ in 0 ..< 10 {
-                            try? await Task.sleep(nanoseconds: 500_000_000) // 0.5 seconds
-                            await permissionManager.checkPermissions()
-                            if permissionManager.hasMicrophonePermission {
-                                break
-                            }
-                        }
-                        isRequesting = false
-                    }
-                }) {
-                    Text("Allow microphone access")
-                        .frame(minHeight: 32)
-                        .padding(.horizontal, 20)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(isRequesting)
-
-                if isRequesting {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                }
+                Text("Microphone and model download")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(theme.secondaryText)
             }
-        }
-        .padding()
-        .animation(.spring(), value: permissionManager.hasMicrophonePermission)
-    }
-}
 
-struct AccessibilityPermissionCard: View {
-    @ObservedObject var permissionManager: PermissionManager
-    let onSkip: () -> Void
-    @State private var isRequesting = false
-    @State private var checkingTimer: Timer?
-    @State private var timeoutTask: Task<Void, Never>?
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "arrow.right.doc.on.clipboard")
-                .font(.system(size: 60))
-                .foregroundStyle(permissionManager.hasAccessibilityPermission ? .green : Color.flowstayBlue)
-                .scaleEffect(permissionManager.hasAccessibilityPermission ? 1.1 : 1.0)
-                .animation(.spring(), value: permissionManager.hasAccessibilityPermission)
-
-            Text("Auto-paste")
-                .font(.albertSans(24, weight: .semibold))
-
-            Text("Allow Flowstay to paste automatically into your current app. You can always copy manually if you prefer.")
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 400)
-
-            if permissionManager.hasAccessibilityPermission {
-                Label("Access granted", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .transition(.scale.combined(with: .opacity))
-                    .onAppear {
-                        cleanupTimers()
-                    }
-            } else {
-                VStack(spacing: 16) {
-                    Button(action: {
-                        isRequesting = true
-                        Task {
-                            await permissionManager.requestAccessibilityPermission()
-
-                            // Start polling for permission changes
-                            checkingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                                let trusted = AXIsProcessTrusted()
-                                if trusted {
-                                    Task { @MainActor in
-                                        permissionManager.accessibilityStatus = .authorized
-                                        cleanupTimers()
-                                        isRequesting = false
-                                    }
-                                }
-                            }
-
-                            // Stop checking after 30 seconds
-                            timeoutTask = Task { @MainActor in
-                                try? await Task.sleep(nanoseconds: 30_000_000_000)
-                                cleanupTimers()
-                                isRequesting = false
-                            }
+            VStack(spacing: 0) {
+                readinessRow(
+                    title: "Microphone",
+                    subtitle: microphoneSubtitle,
+                    icon: coordinator.microphoneStatus == .authorized ? "checkmark.circle.fill" : "mic.fill",
+                    iconColor: coordinator.microphoneStatus == .authorized ? theme.success : theme.accent
+                ) {
+                    if coordinator.microphoneStatus == .authorized {
+                        ReadyLabel(theme: theme, title: "Ready")
+                    } else if coordinator.isRequestingMicrophone {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else if coordinator.microphoneStatus == .denied {
+                        Button("Open settings") {
+                            coordinator.openMicrophoneSettings()
                         }
-                    }) {
-                        Text("Allow accessibility access")
-                            .frame(minHeight: 32)
-                            .padding(.horizontal, 20)
+                        .buttonStyle(.bordered)
+                        .tint(theme.accent)
+                    } else {
+                        Button("Allow") {
+                            coordinator.requestMicrophonePermission()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(theme.accent)
+                    }
+                }
+
+                Divider()
+                    .overlay(theme.cardBorder)
+                    .padding(.horizontal, 18)
+
+                readinessRow(
+                    title: "Speech model",
+                    subtitle: modelSubtitle,
+                    icon: coordinator.modelReady ? "checkmark.circle.fill" : "arrow.down.circle.fill",
+                    iconColor: coordinator.modelReady ? theme.success : theme.accent
+                ) {
+                    if coordinator.modelReady {
+                        ReadyLabel(theme: theme, title: "Ready")
+                    } else if coordinator.isPreparingModel {
+                        Text("Downloading")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(theme.tertiaryText)
+                    } else {
+                        Button(coordinator.modelError == nil ? "Prepare" : "Retry") {
+                            coordinator.retryModelPreparation()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(theme.accent)
+                    }
+                }
+
+                if let modelError = coordinator.modelError {
+                    Divider()
+                        .overlay(theme.cardBorder)
+                        .padding(.horizontal, 18)
+
+                    Text(modelError)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(theme.warning)
+                        .padding(.horizontal, 18)
+                        .padding(.top, 14)
+                }
+
+                Divider()
+                    .overlay(theme.cardBorder)
+                    .padding(.horizontal, 18)
+                    .padding(.top, coordinator.modelError == nil ? 0 : 14)
+
+                HStack(spacing: 12) {
+                    if coordinator.canDeferModelDownload {
+                        Button("Notify me when ready") {
+                            onDefer()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    Spacer()
+
+                    if !coordinator.modelReady {
+                        Text("Downloading model...")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(theme.tertiaryText)
+                    }
+
+                    Button("Continue to the shortcuts") {
+                        onContinue()
                     }
                     .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(isRequesting)
-
-                    if isRequesting {
-                        VStack(spacing: 8) {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                            Text("Please enable Flowstay in System Settings")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if !isRequesting {
-                        Button("Skip for now") {
-                            onSkip()
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                    }
+                    .tint(theme.accent)
+                    .disabled(!coordinator.requiredSetupComplete)
                 }
+                .padding(18)
             }
+            .primarySurface(theme, padding: 0)
         }
-        .padding()
-        .animation(.spring(), value: permissionManager.hasAccessibilityPermission)
-        .onAppear {
-            // Reset requesting state when returning to this page
-            if !permissionManager.hasAccessibilityPermission {
-                cleanupTimers()
-                isRequesting = false
-            }
-        }
-        .onDisappear {
-            cleanupTimers()
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var microphoneSubtitle: String {
+        switch coordinator.microphoneStatus {
+        case .authorized:
+            "Ready"
+        case .denied:
+            "Turn it on in Settings."
+        case .restricted:
+            "Unavailable on this Mac."
+        case .notDetermined:
+            "Needed to dictate."
         }
     }
 
-    private func cleanupTimers() {
-        checkingTimer?.invalidate()
-        checkingTimer = nil
-        timeoutTask?.cancel()
-        timeoutTask = nil
-    }
-}
-
-struct CompletionCard: View {
-    let onComplete: () -> Void
-
-    var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 80))
-                .foregroundStyle(.green)
-                .scaleEffect(1.0)
-                .animation(.easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: true)
-
-            Text("All set!")
-                .font(.albertSans(32, weight: .semibold))
-
-            Text("Flowstay is ready. Dictate from anywhere. Stay in flow.")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-
-            VStack(spacing: 12) {
-                Text("Press Option + Space to start dictating")
-                    .font(.system(.body, design: .monospaced))
-                    .padding()
-                    .background(Color.gray.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                Button(action: {
-                    // Switch back to accessory mode (hide from Dock)
-                    NSApplication.shared.setActivationPolicy(.accessory)
-
-                    // Call completion callback FIRST, then mark as complete
-                    // This ensures if initialization fails, onboarding can be re-run
-                    onComplete()
-
-                    // Only mark complete after successful initialization
-                    // The callback should handle any errors and not crash
-                    UserDefaults.standard.hasCompletedOnboarding = true
-                }) {
-                    Text("Open Flowstay")
-                        .frame(minHeight: 32)
-                        .padding(.horizontal, 24)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-            }
-            .padding(.top)
+    private var modelSubtitle: String {
+        if coordinator.modelReady {
+            return "Ready"
         }
-        .padding()
+        if coordinator.isPreparingModel {
+            return "Downloading local speech."
+        }
+        return "Needed to dictate."
     }
-}
 
-struct FeatureRow: View {
-    let icon: String
-    let title: String
-    let subtitle: String
-
-    var body: some View {
-        HStack(spacing: 12) {
+    @ViewBuilder
+    private func readinessRow<Accessory: View>(
+        title: String,
+        subtitle: String,
+        icon: String,
+        iconColor: Color,
+        @ViewBuilder accessory: () -> Accessory
+    ) -> some View {
+        HStack(spacing: 14) {
             Image(systemName: icon)
-                .font(.system(size: 24))
-                .foregroundStyle(Color.flowstayBlue)
-                .frame(width: 32)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(iconColor)
+                .frame(width: 24)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(theme.primaryText)
+
                 Text(subtitle)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(theme.secondaryText)
+                    .lineLimit(1)
             }
+
+            Spacer(minLength: 12)
+
+            accessory()
         }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 18)
     }
 }
 
-struct ModelDownloadCard: View {
-    @ObservedObject var engineCoordinator: EngineCoordinatorViewModel
-    @Binding var isDownloading: Bool
-    @Binding var downloadComplete: Bool
-    @State private var downloadError: String?
-    let onDownloadComplete: () -> Void
+private struct LiveDictationSceneView: View {
+    let theme: OnboardingTheme
+    @ObservedObject var coordinator: OnboardingCoordinator
+    let onContinue: () -> Void
 
     var body: some View {
-        VStack(spacing: 24) {
-            if isDownloading {
-                VStack(spacing: 20) {
-                    // Elegant indeterminate spinner
-                    ProgressView()
-                        .scaleEffect(2.0)
-                        .tint(Color.flowstayBlue)
-                        .frame(height: 100)
+        GeometryReader { proxy in
+            let metrics = OnboardingFirstWinLayoutMetrics.make(availableHeight: proxy.size.height - 8)
 
-                    VStack(spacing: 12) {
-                        Text("Downloading speech recognition model")
-                            .font(.albertSans(20, weight: .semibold))
-                            .foregroundStyle(.primary)
+            VStack(alignment: .center, spacing: metrics.stackSpacing) {
+                VStack(spacing: 4) {
+                    Text(coordinator.tutorialTitle)
+                        .font(.albertSans(30, weight: .semibold))
+                        .foregroundStyle(theme.primaryText)
+                        .multilineTextAlignment(.center)
 
-                        Text("~600 MB • This may take a few minutes")
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-
-                        VStack(spacing: 4) {
-                            Text("You can minimize this window and continue working")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-
-                            Text("We'll notify you when it's ready")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.top, 4)
+                    if coordinator.canContinueFromTutorial {
+                        Text("Both shortcuts are ready.")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(theme.secondaryText)
                     }
                 }
-            } else if downloadError != nil {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 80))
-                    .foregroundStyle(.orange)
-            } else if downloadComplete {
+                .frame(maxWidth: .infinity)
+                .frame(height: metrics.titleBlockHeight)
+
+                OnboardingKeyboardVisual(
+                    visuals: coordinator.tutorialKeyVisuals,
+                    theme: theme
+                )
+                .frame(height: metrics.keyboardHeight)
+
+                tutorialTranscriptSurface
+                    .frame(height: metrics.transcriptHeight)
+
+                tutorialFooter
+                    .frame(height: metrics.footerHeight, alignment: .center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.horizontal, 24)
+        }
+        .sheet(isPresented: $coordinator.isShortcutPickerPresented, onDismiss: {
+            coordinator.dismissShortcutPicker()
+        }) {
+            ShortcutPickerSheetView(theme: theme, coordinator: coordinator)
+                .frame(width: 520, height: 340)
+        }
+    }
+
+    private var tutorialTranscriptSurface: some View {
+        HStack(spacing: 12) {
+            if coordinator.isRecordingFirstWin {
+                Image(systemName: "waveform")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(theme.accent)
+            } else if !coordinator.demoPasteText.isEmpty {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 80))
-                    .foregroundStyle(.green)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(theme.success)
             } else {
-                Image(systemName: "arrow.down.circle")
-                    .font(.system(size: 80))
-                    .foregroundStyle(Color.flowstayBlue)
+                Capsule()
+                    .fill(theme.accent.opacity(0.32))
+                    .frame(width: 3, height: 18)
             }
 
-            if !isDownloading {
-                Text(downloadError != nil ? "Download failed" : (downloadComplete ? "Ready!" : "Download model"))
-                    .font(.albertSans(28, weight: .semibold))
-            }
+            transcriptText
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .secondarySurface(theme, padding: 16)
+    }
 
-            if let error = downloadError {
-                VStack(spacing: 16) {
-                    Text(error)
-                        .font(.body)
-                        .foregroundStyle(.red)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 400)
+    @ViewBuilder
+    private var transcriptText: some View {
+        if !coordinator.demoPasteText.isEmpty {
+            Text(coordinator.demoPasteText)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(theme.primaryText)
+                .lineLimit(3)
+        } else if !coordinator.latestTutorialTranscript.isEmpty {
+            Text(coordinator.latestTutorialTranscript)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(theme.primaryText)
+                .lineLimit(2)
+        } else if coordinator.isRecordingFirstWin {
+            Text("Listening...")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(theme.secondaryText)
+        } else {
+            Text(" ")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(theme.secondaryText)
+        }
+    }
 
-                    Button("Retry") {
-                        downloadError = nil
-                        // Trigger will be handled by onAppear in parent
+    @ViewBuilder
+    private var tutorialFooter: some View {
+        HStack(spacing: 12) {
+            if let firstWinError = coordinator.firstWinError {
+                Text(firstWinError)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.warning)
+                    .lineLimit(2)
+            } else if coordinator.showHotkeyFallbackHint || coordinator.holdShortcutMissing {
+                HStack(spacing: 6) {
+                    Text("Not working?")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(theme.tertiaryText)
+                    Button("Change shortcut") {
+                        coordinator.presentShortcutPicker()
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
+                    .buttonStyle(.link)
                 }
-            } else if !isDownloading, !downloadComplete {
-                Text("Speech recognition models enable offline transcription")
-                    .font(.title3)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 400)
+            } else if coordinator.canContinueFromTutorial {
+                ReadyLabel(theme: theme, title: "Ready")
+            } else {
+                Color.clear
+            }
+
+            Spacer()
+
+            if coordinator.canContinueFromTutorial {
+                Button("Continue") {
+                    onContinue()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(theme.accent)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
-        .padding()
-        .onChange(of: engineCoordinator.engineError) { _, error in
-            if let error {
-                downloadError = error
-                downloadComplete = false
-                isDownloading = false
-            }
-        }
-        .onChange(of: downloadComplete) { _, isComplete in
-            if isComplete {
-                onDownloadComplete()
-            }
-        }
+        .animation(.spring(response: 0.24, dampingFraction: 0.9), value: coordinator.canContinueFromTutorial)
     }
 }
 
-struct NotificationPermissionCard: View {
-    @Binding var permissionGranted: Bool
-    @State private var isRequesting = false
+private struct ShortcutPickerSheetView: View {
+    let theme: OnboardingTheme
+    @ObservedObject var coordinator: OnboardingCoordinator
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "bell.badge.fill")
-                .font(.system(size: 60))
-                .foregroundStyle(permissionGranted ? .green : Color.flowstayBlue)
-                .scaleEffect(permissionGranted ? 1.1 : 1.0)
-                .animation(.spring(), value: permissionGranted)
-
-            Text("Notifications")
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Shortcut setup")
                 .font(.albertSans(24, weight: .semibold))
+                .foregroundStyle(theme.primaryText)
 
-            Text("Get notified when transcription finishes or models download. You can skip this step if you prefer.")
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 400)
+            Text("Pick keys that feel right.")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(theme.secondaryText)
 
-            if isRequesting {
-                VStack(spacing: 8) {
-                    Text("👆 Look for a notification banner at the top of your screen")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
-                        .multilineTextAlignment(.center)
-                    Text("Click \"Options\" then \"Allow\" to enable notifications")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
+            KeyboardShortcuts.Recorder(
+                "Toggle transcription",
+                name: .toggleDictation,
+                onChange: coordinator.handleToggleShortcutChanged
+            )
+
+            Picker("Hold input", selection: Binding(
+                get: { coordinator.appState.holdToTalkInputSource },
+                set: { coordinator.updateHoldInputSource($0) }
+            )) {
+                ForEach(HoldToTalkInputSource.allCases, id: \.rawValue) { source in
+                    Text(source.displayName).tag(source)
                 }
-                .padding()
-                .background(Color.orange.opacity(0.1))
-                .cornerRadius(8)
+            }
+            .pickerStyle(.segmented)
+
+            if coordinator.appState.holdToTalkInputSource == .alternativeShortcut {
+                KeyboardShortcuts.Recorder(
+                    "Hold-to-talk shortcut",
+                    name: .holdToTalk,
+                    onChange: coordinator.handleHoldShortcutChanged
+                )
             }
 
-            if permissionGranted {
-                Label("Access granted", systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .transition(.scale.combined(with: .opacity))
-            } else {
-                VStack(spacing: 12) {
-                    Button(action: {
-                        isRequesting = true
-                        Task {
-                            // Request with timeout
-                            let granted = await NotificationManager.shared.requestPermissions()
+            if let shortcutValidationMessage = coordinator.shortcutValidationMessage {
+                Text(shortcutValidationMessage)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(theme.warning)
+            }
 
-                            // Keep checking for 15 seconds to see if user responds
-                            var finalGranted = granted
-                            if !granted {
-                                for _ in 0 ..< 15 {
-                                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                                    let status = await NotificationManager.shared.checkPermissionStatus()
-                                    if status {
-                                        finalGranted = true
-                                        break
-                                    }
-                                }
-                            }
+            Spacer()
 
-                            await MainActor.run {
-                                permissionGranted = finalGranted
-                                isRequesting = false
+            HStack {
+                Spacer()
+                Button("Done") {
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(theme.accent)
+            }
+        }
+        .padding(20)
+        .background(theme.backgroundGradientStart)
+    }
+}
+
+private struct QuickSetupSceneView: View {
+    let theme: OnboardingTheme
+    @ObservedObject var coordinator: OnboardingCoordinator
+    let onContinue: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            VStack(spacing: 8) {
+                Text("Paste into other apps")
+                    .font(.albertSans(30, weight: .semibold))
+                    .foregroundStyle(theme.primaryText)
+
+                Text("Turn on Accessibility so Flowstay can insert transcribed text where you're typing.")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(theme.secondaryText)
+                    .multilineTextAlignment(.center)
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Label("Accessibility", systemImage: "square.and.arrow.down.on.square")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(theme.primaryText)
+
+                    Spacer()
+
+                    if coordinator.accessibilityGranted {
+                        ReadyLabel(theme: theme, title: "On")
+                    }
+                }
+
+                Text(
+                    coordinator.accessibilityDescriptionText
+                )
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(theme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+                if coordinator.showAccessibilityFallbackHint {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("If you do not see the macOS approval window:")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(theme.primaryText)
+
+                        ForEach(Array(coordinator.accessibilityRecoverySteps.enumerated()), id: \.offset) { index, step in
+                            HStack(alignment: .top, spacing: 10) {
+                                Text("\(index + 1)")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(theme.primaryText)
+                                    .frame(width: 18, height: 18)
+                                    .background(theme.cardBorder.opacity(0.55), in: Circle())
+
+                                Text(step)
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(theme.secondaryText)
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                    }) {
-                        Text("Allow notifications")
-                            .frame(minHeight: 32)
-                            .padding(.horizontal, 20)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(isRequesting)
+                    .padding(14)
+                    .background(theme.surface.opacity(0.88), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(theme.cardBorder.opacity(0.82), lineWidth: 0.8)
+                    )
+                }
 
-                    if isRequesting {
-                        ProgressView()
-                            .scaleEffect(0.8)
+                if !coordinator.accessibilityGranted {
+                    HStack(spacing: 10) {
+                        Button(coordinator.accessibilityPrimaryActionTitle) {
+                            coordinator.requestAccessibilityPermission()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(theme.accent)
+                        .disabled(coordinator.isRequestingAccessibility)
+
+                        if coordinator.showAccessibilityFallbackHint {
+                            Button("Open Accessibility Settings") {
+                                coordinator.openAccessibilitySettings()
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(coordinator.isRequestingAccessibility)
+                        }
+
+                        if coordinator.isRequestingAccessibility {
+                            ProgressView()
+                                .controlSize(.small)
+                        }
                     }
                 }
             }
-        }
-        .padding()
-        .animation(.spring(), value: permissionGranted)
-        .onAppear {
-            // Check initial status
-            Task {
-                let status = await NotificationManager.shared.checkPermissionStatus()
-                await MainActor.run {
-                    permissionGranted = status
-                }
+            .primarySurface(theme, padding: 18)
+
+            Button("Continue") {
+                onContinue()
             }
+            .buttonStyle(.borderedProminent)
+            .tint(theme.accent)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+private struct DoneSceneView: View {
+    let theme: OnboardingTheme
+    @ObservedObject var coordinator: OnboardingCoordinator
+    let onFinish: () -> Void
+
+    var body: some View {
+        VStack(spacing: 18) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 58))
+                .foregroundStyle(theme.success)
+
+            VStack(spacing: 8) {
+                Text("You're ready")
+                    .font(.albertSans(34, weight: .semibold))
+                    .foregroundStyle(theme.primaryText)
+
+                Text(coordinator.actionHint)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(theme.secondaryText)
+            }
+            .multilineTextAlignment(.center)
+
+            Button("Open Flowstay") {
+                onFinish()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .tint(theme.accent)
+            .disabled(!coordinator.canCompleteOnboarding)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+    }
+}
+
+private struct ReadyLabel: View {
+    let theme: OnboardingTheme
+    let title: String
+
+    var body: some View {
+        Label(title, systemImage: "checkmark.circle.fill")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(theme.success)
+    }
+}
+
+private struct OnboardingPaneShape: InsettableShape {
+    private let cornerRadius: CGFloat
+    private let insetAmount: CGFloat
+
+    init(cornerRadius: CGFloat = 34, insetAmount: CGFloat = 0) {
+        self.cornerRadius = cornerRadius
+        self.insetAmount = insetAmount
+    }
+
+    func path(in rect: CGRect) -> Path {
+        RoundedRectangle(cornerRadius: cornerRadius - insetAmount, style: .continuous)
+            .path(in: rect.insetBy(dx: insetAmount, dy: insetAmount))
+    }
+
+    func inset(by amount: CGFloat) -> some InsettableShape {
+        OnboardingPaneShape(cornerRadius: cornerRadius, insetAmount: insetAmount + amount)
+    }
+}
+
+private extension View {
+    func primarySurface(_ theme: OnboardingTheme, padding: CGFloat) -> some View {
+        self
+            .padding(padding)
+            .background(
+                RoundedRectangle(cornerRadius: OnboardingTheme.cardCornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: OnboardingTheme.cardCornerRadius, style: .continuous)
+                            .fill(theme.surface)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: OnboardingTheme.cardCornerRadius, style: .continuous)
+                    .stroke(theme.cardBorder, lineWidth: 0.8)
+            )
+            .shadow(color: theme.cardShadow, radius: 18, y: 10)
+    }
+
+    func secondarySurface(_ theme: OnboardingTheme, padding: CGFloat) -> some View {
+        self
+            .padding(padding)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(.thinMaterial)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(theme.elevatedSurface)
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(theme.cardBorder, lineWidth: 0.8)
+            )
     }
 }

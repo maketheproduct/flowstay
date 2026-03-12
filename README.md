@@ -48,6 +48,18 @@ Flowstay requires:
 - Microphone access
 - Accessibility access (for system-wide shortcuts)
 
+## Keyboard Shortcuts
+
+- Toggle transcription shortcut defaults to `Option+Space`, and you can customize it in Settings.
+- Hold-to-talk input is configurable in Settings:
+  - `Function key` mode uses `Fn`.
+  - `Alternative shortcut` mode uses a separate hold-to-talk shortcut you choose.
+- Hotkey behavior modes:
+  - `Toggle`: Uses the toggle shortcut to start/stop.
+  - `Hold`: Uses your selected hold input mode as press-to-talk.
+  - `Both`: Toggle shortcut for toggle, selected hold input mode for hold-to-talk.
+- Shortcut settings persist across app relaunches using macOS `UserDefaults`.
+
 ## AI Providers
 
 Flowstay personas support:
