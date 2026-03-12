@@ -106,5 +106,4 @@ public class AppDetectionService: ObservableObject {
 
         return bitmapRep.representation(using: .png, properties: [:])
     }
-
 }
