@@ -79,8 +79,10 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         let startupContext = StartupRecoveryManager.shared.beginLaunch(version: shortVersion, build: buildVersion)
         if startupContext.recoveryMode {
+            let stage = startupContext.previousIncompleteStage?.rawValue ?? "unknown"
+            let build = startupContext.buildIdentifier
             logger.fault(
-                "[AppDelegate] Startup recovery enabled for build \(startupContext.buildIdentifier, privacy: .public) after incomplete stage \(startupContext.previousIncompleteStage?.rawValue ?? "unknown", privacy: .public)"
+                "[AppDelegate] Startup recovery enabled for build \(build, privacy: .public) after incomplete stage \(stage, privacy: .public)"
             )
         }
 
@@ -1124,8 +1126,36 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         handleHotkeyToggleRequested()
     }
 
-    // MARK: - Settings Window
+    // MARK: - URL Handling (OAuth Callbacks)
 
+    private func registerForURLEvents() {
+        NSAppleEventManager.shared().setEventHandler(
+            self,
+            andSelector: #selector(handleURLEvent(_:withReplyEvent:)),
+            forEventClass: AEEventClass(kInternetEventClass),
+            andEventID: AEEventID(kAEGetURL)
+        )
+        logger.info("[AppDelegate] Registered for URL events")
+    }
+
+    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
+        guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
+              let url = URL(string: urlString)
+        else {
+            logger.info("[AppDelegate] Invalid URL event received")
+            return
+        }
+
+        logger.info("[AppDelegate] URL event received: \(url.scheme ?? "unknown")://\(url.host ?? "")\(url.path)")
+
+        // Note: OpenRouter OAuth now uses localhost:3000 callback server instead of URL scheme
+        // This handler remains for potential future URL scheme integrations
+    }
+}
+
+// MARK: - Settings & Recovery Windows
+
+extension FlowstayAppDelegate {
     func openSettingsWindow() {
         if popover.isShown {
             closePopover()
@@ -1175,7 +1205,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         openRecoveryWindow(autoPresented: false)
     }
 
-    private func openRecoveryWindow(autoPresented: Bool) {
+    func openRecoveryWindow(autoPresented: Bool) {
         closePopover()
 
         if let existingWindow = recoveryWindow, existingWindow.isVisible {
@@ -1215,9 +1245,11 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         recoveryWindow = window
         logger.info("[AppDelegate] Recovery troubleshooting window opened")
     }
+}
 
-    // MARK: - Onboarding Window
+// MARK: - Onboarding Window
 
+extension FlowstayAppDelegate {
     func openOnboardingWindow() {
         closePopover()
 
@@ -1252,7 +1284,9 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             },
             onAccessibilityPromptDidComplete: { [weak self] granted in
                 guard granted else { return }
-                self?.restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(reason: "accessibility-request-granted")
+                self?.restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(
+                    reason: "accessibility-request-granted"
+                )
             }
         )
         .frame(width: 860, height: 660)
@@ -1296,15 +1330,13 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         logger.info("[AppDelegate] Onboarding window opened")
     }
 
-    private func presentPrimarySurfaceAfterOnboardingCompletion() async {
-        // Allow one runloop turn for menu bar anchor geometry to settle after
-        // onboarding window closure and activation policy transitions.
+    func presentPrimarySurfaceAfterOnboardingCompletion() async {
         await Task.yield()
         try? await Task.sleep(for: .milliseconds(120))
         showPopover(retryCount: 0, forceOnFailure: true)
     }
 
-    private func refreshWindowContentAfterPresentation(_ window: NSWindow) {
+    func refreshWindowContentAfterPresentation(_ window: NSWindow) {
         DispatchQueue.main.async {
             window.contentView?.needsLayout = true
             window.contentView?.layoutSubtreeIfNeeded()
@@ -1312,7 +1344,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
-    private func prepareOnboardingWindowForAccessibilityPrompt() async {
+    func prepareOnboardingWindowForAccessibilityPrompt() async {
         guard let onboardingWindow, onboardingWindow.isVisible else { return }
 
         if !shouldRestoreOnboardingWindowAfterAccessibilityPrompt {
@@ -1321,8 +1353,6 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
         shouldRestoreOnboardingWindowAfterAccessibilityPrompt = true
 
-        // The system controls the Accessibility approval UI. Move the onboarding
-        // panel behind it so the prompt or System Settings can become visible.
         onboardingWindow.level = .normal
         onboardingWindow.orderBack(nil)
 
@@ -1330,7 +1360,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         try? await Task.sleep(for: .milliseconds(180))
     }
 
-    private func restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(reason: String) {
+    func restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(reason: String) {
         guard shouldRestoreOnboardingWindowAfterAccessibilityPrompt else { return }
 
         guard let onboardingWindow else {
@@ -1344,39 +1374,15 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
         onboardingWindow.makeKeyAndOrderFront(nil)
         refreshWindowContentAfterPresentation(onboardingWindow)
-        logger.debug("[AppDelegate] Restored onboarding window after accessibility flow (\(reason, privacy: .public))")
+        logger.debug(
+            "[AppDelegate] Restored onboarding window after accessibility flow (\(reason, privacy: .public))"
+        )
         clearOnboardingAccessibilityPromptState()
     }
 
-    private func clearOnboardingAccessibilityPromptState() {
+    func clearOnboardingAccessibilityPromptState() {
         shouldRestoreOnboardingWindowAfterAccessibilityPrompt = false
         onboardingWindowLevelBeforeAccessibilityPrompt = nil
-    }
-
-    // MARK: - URL Handling (OAuth Callbacks)
-
-    private func registerForURLEvents() {
-        NSAppleEventManager.shared().setEventHandler(
-            self,
-            andSelector: #selector(handleURLEvent(_:withReplyEvent:)),
-            forEventClass: AEEventClass(kInternetEventClass),
-            andEventID: AEEventID(kAEGetURL)
-        )
-        logger.info("[AppDelegate] Registered for URL events")
-    }
-
-    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
-        guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
-              let url = URL(string: urlString)
-        else {
-            logger.info("[AppDelegate] Invalid URL event received")
-            return
-        }
-
-        logger.info("[AppDelegate] URL event received: \(url.scheme ?? "unknown")://\(url.host ?? "")\(url.path)")
-
-        // Note: OpenRouter OAuth now uses localhost:3000 callback server instead of URL scheme
-        // This handler remains for potential future URL scheme integrations
     }
 }
 

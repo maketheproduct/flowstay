@@ -1001,41 +1001,6 @@ final class OnboardingCoordinator: ObservableObject {
         }
     }
 
-    private func holdKeyLabels() -> [String] {
-        switch appState.holdToTalkInputSource {
-        case .functionKey:
-            return ["Fn"]
-        case .alternativeShortcut:
-            if let hotkeyHoldShortcut {
-                return keyLabels(for: hotkeyHoldShortcut)
-            }
-            return ["Set Shortcut"]
-        }
-    }
-
-    private func keyLabels(for shortcut: KeyboardShortcuts.Shortcut) -> [String] {
-        var labels: [String] = []
-        let modifiers = shortcut.modifiers.intersection(.deviceIndependentFlagsMask)
-
-        if modifiers.contains(.control) {
-            labels.append("Control")
-        }
-        if modifiers.contains(.option) {
-            labels.append("Option")
-        }
-        if modifiers.contains(.shift) {
-            labels.append("Shift")
-        }
-        if modifiers.contains(.command) {
-            labels.append("Command")
-        }
-
-        let rawKeyLabel = shortcut.nsMenuItemKeyEquivalent?.uppercased() ?? "Key"
-        let keyLabel = rawKeyLabel == " " ? "Space" : rawKeyLabel
-        labels.append(keyLabel.uppercased() == "SPACE" ? "Space" : keyLabel.uppercased())
-        return labels
-    }
-
     private func applyAccessibilityAutoPastePolicy(isGranted: Bool) {
         if isGranted {
             appState.autoPasteEnabled = true
@@ -1135,5 +1100,44 @@ final class OnboardingCoordinator: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+    }
+}
+
+// MARK: - Key Label Helpers
+
+extension OnboardingCoordinator {
+    func holdKeyLabels() -> [String] {
+        switch appState.holdToTalkInputSource {
+        case .functionKey:
+            return ["Fn"]
+        case .alternativeShortcut:
+            if let hotkeyHoldShortcut {
+                return keyLabels(for: hotkeyHoldShortcut)
+            }
+            return ["Set Shortcut"]
+        }
+    }
+
+    func keyLabels(for shortcut: KeyboardShortcuts.Shortcut) -> [String] {
+        var labels: [String] = []
+        let modifiers = shortcut.modifiers.intersection(.deviceIndependentFlagsMask)
+
+        if modifiers.contains(.control) {
+            labels.append("Control")
+        }
+        if modifiers.contains(.option) {
+            labels.append("Option")
+        }
+        if modifiers.contains(.shift) {
+            labels.append("Shift")
+        }
+        if modifiers.contains(.command) {
+            labels.append("Command")
+        }
+
+        let rawKeyLabel = shortcut.nsMenuItemKeyEquivalent?.uppercased() ?? "Key"
+        let keyLabel = rawKeyLabel == " " ? "Space" : rawKeyLabel
+        labels.append(keyLabel.uppercased() == "SPACE" ? "Space" : keyLabel.uppercased())
+        return labels
     }
 }

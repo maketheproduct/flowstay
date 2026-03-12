@@ -249,17 +249,17 @@ final class AppStateTests: XCTestCase {
         XCTAssertEqual(HotkeyPressMode.fromStoredValue("unknown"), .both)
     }
 
-    func testHotkeyPressModeInitialModePolicyForFreshInstall() {
+    func testHotkeyPressModeInitialModeDefaultsToBoth() {
         XCTAssertEqual(
-            HotkeyPressMode.initialMode(storedValue: nil, hasExistingOnboardingState: false),
+            HotkeyPressMode.initialMode(storedValue: nil),
             .both
         )
     }
 
-    func testHotkeyPressModeInitialModePolicyForLegacyInstallWithoutStoredMode() {
+    func testHotkeyPressModeInitialModeRespectsStoredValue() {
         XCTAssertEqual(
-            HotkeyPressMode.initialMode(storedValue: nil, hasExistingOnboardingState: true),
-            .both
+            HotkeyPressMode.initialMode(storedValue: "toggle"),
+            .toggle
         )
     }
 
