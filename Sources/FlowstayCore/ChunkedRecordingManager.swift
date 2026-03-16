@@ -186,7 +186,7 @@ public actor ChunkedRecordingManager {
             errorMessages: errorMessages
         )
 
-        logger.info("[ChunkedRecordingManager] Finalized: \(completedChunks.count, privacy: .public) chunks, \(finalText.count, privacy: .public) chars")
+        logger.info("[ChunkedRecordingManager] Finalized: \(self.completedChunks.count, privacy: .public) chunks, \(finalText.count, privacy: .public) chars")
 
         return (finalText, metrics)
     }
