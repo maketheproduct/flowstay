@@ -123,7 +123,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             // Reset chunked recording manager
             await chunkedRecordingManager.reset()
 
-            print("[FluidAudioSpeechRecognition] Cleaned up resources")
+            logger.info("[FluidAudioSpeechRecognition] Cleaned up resources")
         }
     }
 
@@ -165,7 +165,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
             } catch {
                 lastError = error
-                print("[FluidAudioSpeechRecognition] Model download failed on attempt \(attempt + 1): \(error.localizedDescription)")
+                logger.error("[FluidAudioSpeechRecognition] Model download failed on attempt \(attempt + 1, privacy: .public): \(error.localizedDescription, privacy: .public)")
 
                 // Don't retry on last attempt
                 if attempt < maxRetries - 1 {
@@ -186,7 +186,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
     /// Fast-path: Load models if they already exist on disk (no download)
     func loadModelsIfAvailable() async throws {
-        print("[FluidAudioSpeechRecognition] Attempting to load cached models...")
+        logger.info("[FluidAudioSpeechRecognition] Attempting to load cached models...")
 
         // Try to load models directly without downloading
         do {
@@ -211,16 +211,16 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             // Configure chunked recording manager with ASR manager reference
             await chunkedRecordingManager.configure(asrManager: asrManager)
 
-            print("[FluidAudioSpeechRecognition] ✅ Models loaded from cache successfully")
+            logger.info("[FluidAudioSpeechRecognition] Models loaded from cache successfully")
         } catch {
-            print("[FluidAudioSpeechRecognition] ⚠️ Failed to load cached models: \(error)")
+            logger.warning("[FluidAudioSpeechRecognition] Failed to load cached models: \(error, privacy: .public)")
             throw error
         }
     }
 
     /// Initialize FluidAudio models and manager
     func setupFluidAudio() async throws {
-        print("[FluidAudioSpeechRecognition] Setting up FluidAudio ASR...")
+        logger.info("[FluidAudioSpeechRecognition] Setting up FluidAudio ASR...")
 
         do {
             // Download models if needed with retry logic and exponential backoff
@@ -245,8 +245,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             // Configure chunked recording manager with ASR manager reference
             await chunkedRecordingManager.configure(asrManager: asrManager)
         } catch {
-            print("[FluidAudioSpeechRecognition] ❌ Failed to initialize FluidAudio: \(error)")
-            print("[FluidAudioSpeechRecognition] Error details: \(String(describing: error))")
+            logger.error("[FluidAudioSpeechRecognition] Failed to initialize FluidAudio: \(error, privacy: .public)")
+            logger.error("[FluidAudioSpeechRecognition] Error details: \(String(describing: error), privacy: .public)")
             throw error
         }
     }
@@ -269,11 +269,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // Never touch AVAudioEngine input hardware until microphone permission
         // has already been granted by explicit user action.
         guard AVAudioApplication.shared.recordPermission == .granted else {
-            print("[FluidAudioSpeechRecognition] Pre-warm skipped: microphone permission not granted")
+            logger.warning("[FluidAudioSpeechRecognition] Pre-warm skipped: microphone permission not granted")
             return false
         }
 
-        print("[FluidAudioSpeechRecognition] Pre-warming recording pipeline...")
+        logger.info("[FluidAudioSpeechRecognition] Pre-warming recording pipeline...")
 
         let warmEngine = AVAudioEngine()
         let inputNode = warmEngine.inputNode
@@ -285,7 +285,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             channels: 1,
             interleaved: false
         ) else {
-            print("[FluidAudioSpeechRecognition] Pre-warm skipped: failed to create output format")
+            logger.warning("[FluidAudioSpeechRecognition] Pre-warm skipped: failed to create output format")
             return false
         }
 
@@ -294,7 +294,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             inputFormat: inputFormat,
             outputFormat: outputFormat
         ) else {
-            print("[FluidAudioSpeechRecognition] Pre-warm skipped: failed to create tap proxy")
+            logger.warning("[FluidAudioSpeechRecognition] Pre-warm skipped: failed to create tap proxy")
             return false
         }
 
@@ -311,14 +311,14 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             try await Task.sleep(nanoseconds: 30_000_000) // 30ms
             try warmEngine.start()
             try? await Task.sleep(nanoseconds: 40_000_000) // brief warm-up run
-            print("[FluidAudioSpeechRecognition] ✅ Recording pipeline pre-warmed")
+            logger.info("[FluidAudioSpeechRecognition] Recording pipeline pre-warmed")
             inputNode.removeTap(onBus: 0)
             if warmEngine.isRunning {
                 warmEngine.stop()
             }
             return true
         } catch {
-            print("[FluidAudioSpeechRecognition] ⚠️ Pre-warm failed: \(error.localizedDescription)")
+            logger.warning("[FluidAudioSpeechRecognition] Pre-warm failed: \(error.localizedDescription, privacy: .public)")
             inputNode.removeTap(onBus: 0)
             if warmEngine.isRunning {
                 warmEngine.stop()
@@ -343,7 +343,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
         // Ensure we're not already recording
         if isRecording {
-            print("[FluidAudioSpeechRecognition] Already recording, stopping first...")
+            logger.info("[FluidAudioSpeechRecognition] Already recording, stopping first...")
             stopRecording()
             try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
         }
@@ -380,7 +380,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         let inputFormat = inputNode.outputFormat(forBus: 0)
 
         // Log input format
-        print("[FluidAudioSpeechRecognition] 📊 Input format: \(inputFormat.sampleRate)Hz, \(inputFormat.channelCount) channel(s)")
+        logger.debug("[FluidAudioSpeechRecognition] Input format: \(inputFormat.sampleRate, privacy: .public)Hz, \(inputFormat.channelCount, privacy: .public) channel(s)")
 
         // Convert to 16kHz mono for FluidAudio
         // This automatically handles ANY input sample rate (44.1kHz, 48kHz, 96kHz, etc.)
@@ -390,7 +390,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             channels: 1,
             interleaved: false
         ) else {
-            print("[FluidAudioSpeechRecognition] Failed to create output audio format")
+            logger.error("[FluidAudioSpeechRecognition] Failed to create output audio format")
             throw FluidAudioError.microphoneSetupFailed
         }
 
@@ -403,12 +403,12 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             inputFormat: inputFormat,
             outputFormat: outputFormat
         ) else {
-            print("[FluidAudioSpeechRecognition] Failed to create audio tap proxy")
+            logger.error("[FluidAudioSpeechRecognition] Failed to create audio tap proxy")
             throw FluidAudioError.microphoneSetupFailed
         }
         tapProxy = proxy
 
-        print("[FluidAudioSpeechRecognition] Installing audio tap...")
+        logger.debug("[FluidAudioSpeechRecognition] Installing audio tap...")
         installFluidAudioTap(
             inputNode: inputNode,
             bufferSize: 1024,
@@ -419,7 +419,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // Start audio engine with proper timing to avoid -10877 error
         // On macOS, we don't need AVAudioSession (iOS-only)
         if !audioEngine.isRunning {
-            print("[FluidAudioSpeechRecognition] Preparing audio engine...")
+            logger.debug("[FluidAudioSpeechRecognition] Preparing audio engine...")
 
             // Prepare the engine - this configures the audio hardware
             audioEngine.prepare()
@@ -428,11 +428,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             // This prevents kAudioUnitErr_CannotDoInCurrentContext (-10877)
             try await Task.sleep(nanoseconds: 50_000_000) // 50ms - minimum delay to avoid race condition
 
-            print("[FluidAudioSpeechRecognition] Starting audio engine...")
+            logger.info("[FluidAudioSpeechRecognition] Starting audio engine...")
             try audioEngine.start()
-            print("[FluidAudioSpeechRecognition] ✅ Audio engine started successfully")
+            logger.info("[FluidAudioSpeechRecognition] Audio engine started successfully")
         } else {
-            print("[FluidAudioSpeechRecognition] Audio engine already running")
+            logger.debug("[FluidAudioSpeechRecognition] Audio engine already running")
         }
 
         isRecording = true
@@ -444,12 +444,12 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // Arm silence detection (actual timer starts after first detected speech).
         startSilenceDetectionTimer()
 
-        print("[FluidAudioSpeechRecognition] Recording started successfully")
-        print("[FluidAudioSpeechRecognition] Waiting for audio data...")
+        logger.info("[FluidAudioSpeechRecognition] Recording started successfully")
+        logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
     }
 
     public func stopRecording() {
-        print("[FluidAudioSpeechRecognition] Stopping recording...")
+        logger.info("[FluidAudioSpeechRecognition] Stopping recording...")
 
         userInitiatedStop = true
         let stopRequestedAt = Date()
@@ -473,6 +473,22 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // Capture the tap proxy reference before cleanup
         let proxy = tapProxy
 
+        // Safety watchdog: if the cleanup chain below hasn't fired onTranscriptionComplete
+        // within 15 seconds, force-fire it so the UI never gets stuck in "processing".
+        Task { @MainActor [weak self, completionLock] in
+            try? await Task.sleep(nanoseconds: 15_000_000_000)
+            guard let self else { return }
+            let shouldForce = completionLock.withLock {
+                let should = !self.hasCalledCompletion
+                if should { self.hasCalledCompletion = true }
+                return should
+            }
+            if shouldForce {
+                self.logger.warning("[FluidAudio] Safety timeout — forcing completion after 15s")
+                self.onTranscriptionComplete?(self.transcription, 0)
+            }
+        }
+
         // CRITICAL: Don't immediately stop audio engine
         // Audio tap has internal buffers that need time to be delivered
         // Stopping engine immediately would lose trailing audio
@@ -486,14 +502,14 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             )
 
             // Step 1: Wait for audio tap to deliver remaining buffers and preserve short trailing speech.
-            print("[FluidAudioSpeechRecognition] Waiting for audio tap buffer delivery...")
+            logger.debug("[FluidAudio] Waiting for audio tap buffer delivery...")
             try? await Task.sleep(nanoseconds: UInt64(stopDecision.delayBeforeTapRemoval * 1_000_000_000))
 
             // Step 2: Remove the tap first to stop new audio from being processed
             // This is safer than stopping the engine immediately
             if let engine = self.audioEngine {
                 engine.inputNode.removeTap(onBus: 0)
-                print("[FluidAudioSpeechRecognition] Audio tap removed")
+                logger.debug("[FluidAudio] Audio tap removed")
             }
 
             // Step 3: Wait for ALL pending audio processing tasks to complete
@@ -506,7 +522,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             await self.chunkedRecordingManager.forceChunkBoundary()
 
             // Step 4: NOW clean up audio engine safely (all audio has been processed)
-            print("[FluidAudioSpeechRecognition] Cleaning up audio engine...")
+            logger.debug("[FluidAudio] Cleaning up audio engine...")
             if let engine = self.audioEngine, engine.isRunning {
                 engine.stop()
             }
@@ -555,7 +571,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         if hasAudioActivity {
             if !hasDetectedSpeechInCurrentSession {
                 hasDetectedSpeechInCurrentSession = true
-                print("[FluidAudioSpeechRecognition] First speech detected - starting silence timeout tracking")
+                logger.info("[FluidAudioSpeechRecognition] First speech detected - starting silence timeout tracking")
             }
             resetSilenceDetectionTimer()
         }
@@ -566,7 +582,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
     /// Finalize chunked recording and get complete transcription
     private func finalizeChunkedTranscription(diagnostics: StopFinalizationDiagnostics? = nil) async {
-        print("[FluidAudioSpeechRecognition] Finalizing chunked transcription...")
+        logger.info("[FluidAudioSpeechRecognition] Finalizing chunked transcription...")
 
         // Get final transcription and metrics from chunked recording manager
         let (finalText, metrics) = await chunkedRecordingManager.finalize()
@@ -580,9 +596,9 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             // Update UI with final transcription
             transcription = trimmedText
 
-            print("[FluidAudioSpeechRecognition] ✅ Transcription complete (\(trimmedText.count) chars, \(metrics.chunkCount) chunks, \(String(format: "%.1f", metrics.totalDuration))s)")
+            logger.info("[FluidAudioSpeechRecognition] Transcription complete (\(trimmedText.count, privacy: .public) chars, \(metrics.chunkCount, privacy: .public) chunks, \(String(format: "%.1f", metrics.totalDuration), privacy: .public)s)")
         } else {
-            print("[FluidAudioSpeechRecognition] ⚠️ Transcription returned empty text")
+            logger.warning("[FluidAudioSpeechRecognition] Transcription returned empty text")
         }
 
         // Call completion callback with duration (thread-safe check) for both non-empty and empty
@@ -693,23 +709,23 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
         let timeoutInterval = appState.silenceTimeoutSeconds
         if timeoutInterval <= 0 {
-            print("[FluidAudioSpeechRecognition] Silence detection disabled (timeout: \(timeoutInterval)s)")
+            logger.debug("[FluidAudioSpeechRecognition] Silence detection disabled (timeout: \(timeoutInterval, privacy: .public)s)")
             return
         }
 
         guard hasDetectedSpeechInCurrentSession else {
-            print("[FluidAudioSpeechRecognition] Silence timer armed (starts after first speech)")
+            logger.debug("[FluidAudioSpeechRecognition] Silence timer armed (starts after first speech)")
             return
         }
 
         silenceDetectionTimer?.invalidate()
-        print("[FluidAudioSpeechRecognition] Starting silence detection timer with timeout: \(timeoutInterval)s")
+        logger.debug("[FluidAudioSpeechRecognition] Starting silence detection timer with timeout: \(timeoutInterval, privacy: .public)s")
 
         silenceDetectionTimer = Timer.scheduledTimer(withTimeInterval: timeoutInterval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, isRecording else { return }
 
-                print("[FluidAudioSpeechRecognition] ⏱️ Silence timeout reached after \(timeoutInterval)s, stopping recording")
+                logger.info("[FluidAudioSpeechRecognition] Silence timeout reached after \(timeoutInterval, privacy: .public)s, stopping recording")
                 stopRecording()
             }
         }
@@ -726,14 +742,14 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // Start a fresh timer
         let timeoutInterval = appState.silenceTimeoutSeconds
         if timeoutInterval <= 0 {
-            print("[FluidAudioSpeechRecognition] Silence detection disabled (timeout: \(timeoutInterval)s)")
+            logger.debug("[FluidAudioSpeechRecognition] Silence detection disabled (timeout: \(timeoutInterval, privacy: .public)s)")
             return
         }
         silenceDetectionTimer = Timer.scheduledTimer(withTimeInterval: timeoutInterval, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, isRecording else { return }
 
-                print("[FluidAudioSpeechRecognition] ⏱️ Silence detected for \(timeoutInterval)s, stopping recording")
+                logger.info("[FluidAudioSpeechRecognition] Silence detected for \(timeoutInterval, privacy: .public)s, stopping recording")
                 sendSilenceTimeoutNotification()
                 stopRecording()
             }
@@ -777,6 +793,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
     private nonisolated(unsafe) weak var owner: FluidAudioSpeechRecognition?
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
+    private let logger = Logger(subsystem: "com.flowstay.app", category: "FluidAudioTapProxy")
     /// SAFETY: nonisolated(unsafe) to allow use from audio render thread
     /// with explicit locking where needed.
     private nonisolated(unsafe) var tapCount = 0
@@ -786,42 +803,69 @@ final class FluidAudioTapProxy: @unchecked Sendable {
     private nonisolated(unsafe) var pendingTaskCount: Int = 0
 
     /// Signal when all pending tasks have completed
-    private nonisolated(unsafe) var allTasksCompletedContinuation: CheckedContinuation<Void, Never>?
+    private nonisolated(unsafe) var allTasksCompletedContinuation: CheckedContinuation<Bool, Never>?
 
     init?(owner: FluidAudioSpeechRecognition, inputFormat: AVAudioFormat, outputFormat: AVAudioFormat) {
         guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
-            print("[FluidAudioTapProxy] Failed to create audio converter from \(inputFormat.sampleRate)Hz to \(outputFormat.sampleRate)Hz")
+            // Cannot use self.logger before all stored properties are initialized,
+            // so use a local Logger instance for the early-return path.
+            Logger(subsystem: "com.flowstay.app", category: "FluidAudioTapProxy")
+                .error("[FluidAudioTapProxy] Failed to create audio converter from \(inputFormat.sampleRate, privacy: .public)Hz to \(outputFormat.sampleRate, privacy: .public)Hz")
             return nil
         }
         self.owner = owner
         self.outputFormat = outputFormat
         self.converter = converter
 
-        print("[FluidAudioTapProxy] Initialized - converting \(inputFormat.sampleRate)Hz to \(outputFormat.sampleRate)Hz")
+        logger.info("[FluidAudioTapProxy] Initialized - converting \(inputFormat.sampleRate, privacy: .public)Hz to \(outputFormat.sampleRate, privacy: .public)Hz")
     }
 
-    /// Wait for all pending audio processing tasks to complete
-    /// Call this before finalizing transcription to ensure no audio is lost
+    /// Wait for all pending audio processing tasks to complete (with 5-second timeout).
+    /// If a pending task crashes before calling `decrementPendingTasks()`, the
+    /// continuation would never resume — the timeout prevents an infinite hang.
     func waitForPendingTasks() async {
         let count = pendingTasksLock.withLock { pendingTaskCount }
         if count == 0 {
-            print("[FluidAudioTapProxy] No pending tasks to wait for")
+            logger.debug("[FluidAudioTapProxy] No pending tasks to wait for")
             return
         }
 
-        print("[FluidAudioTapProxy] Waiting for \(count) pending audio processing tasks...")
+        logger.info("[FluidAudioTapProxy] Waiting for \(count) pending audio processing tasks...")
 
-        await withCheckedContinuation { continuation in
-            pendingTasksLock.withLock {
+        let didComplete = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            // Try to register our continuation
+            let alreadyDone = pendingTasksLock.withLock { () -> Bool in
                 if pendingTaskCount == 0 {
-                    continuation.resume()
-                } else {
-                    allTasksCompletedContinuation = continuation
+                    return true
+                }
+                allTasksCompletedContinuation = continuation
+                return false
+            }
+
+            if alreadyDone {
+                continuation.resume(returning: true)
+                return
+            }
+
+            // Start a timeout watchdog — if the continuation hasn't been resumed in 5s, force it.
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                guard let self else { return }
+                self.pendingTasksLock.withLock {
+                    if let stale = self.allTasksCompletedContinuation {
+                        self.allTasksCompletedContinuation = nil
+                        stale.resume(returning: false)
+                    }
                 }
             }
         }
 
-        print("[FluidAudioTapProxy] All pending tasks completed")
+        if didComplete {
+            logger.info("[FluidAudioTapProxy] All pending tasks completed")
+        } else {
+            let remaining = pendingTasksLock.withLock { pendingTaskCount }
+            logger.warning("[FluidAudioTapProxy] Timed out waiting for \(remaining) pending tasks — continuing anyway")
+        }
     }
 
     /// Increment pending task count
@@ -837,7 +881,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
             pendingTaskCount -= 1
             if pendingTaskCount == 0, let continuation = allTasksCompletedContinuation {
                 allTasksCompletedContinuation = nil
-                continuation.resume()
+                continuation.resume(returning: true)
             }
         }
     }
@@ -847,13 +891,13 @@ final class FluidAudioTapProxy: @unchecked Sendable {
 
         // Log every tap for debugging microphone issues
         if tapCount <= 10 || tapCount % 10 == 0 { // Log first 10 taps, then every 10th
-            print("[FluidAudioTapProxy] Tap #\(tapCount): buffer frameLength=\(buffer.frameLength), format=\(buffer.format)")
+            logger.debug("[FluidAudioTapProxy] Tap #\(self.tapCount, privacy: .public): buffer frameLength=\(buffer.frameLength, privacy: .public), format=\(buffer.format, privacy: .public)")
         }
 
         // Convert to 16kHz mono
         let frameCapacity = UInt32(Double(buffer.frameLength) * outputFormat.sampleRate / buffer.format.sampleRate)
         guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frameCapacity) else {
-            print("[FluidAudioTapProxy] Failed to create converted buffer")
+            logger.error("[FluidAudioTapProxy] Failed to create converted buffer")
             return
         }
 
@@ -865,7 +909,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
 
         if let error {
             if tapCount % 10 == 0 { // Log occasionally to avoid spam
-                print("[FluidAudioTapProxy] Conversion error: \(error)")
+                logger.error("[FluidAudioTapProxy] Conversion error: \(error, privacy: .public)")
             }
             return
         }
@@ -875,7 +919,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
               convertedBuffer.frameLength > 0
         else {
             if tapCount <= 10 {
-                print("[FluidAudioTapProxy] No channel data or zero frame length")
+                logger.debug("[FluidAudioTapProxy] No channel data or zero frame length")
             }
             return
         }
@@ -890,7 +934,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
         // Log periodically for debugging - more frequent initially
         if tapCount <= 10 || tapCount % 10 == 0 { // Log first 10 taps, then every 10th
             let maxAmplitude = samples.map { abs($0) }.max() ?? 0
-            print("[FluidAudioTapProxy] Tap #\(tapCount): \(samples.count) samples, max amplitude: \(maxAmplitude), RMS: \(rms)")
+            logger.debug("[FluidAudioTapProxy] Tap #\(self.tapCount, privacy: .public): \(samples.count, privacy: .public) samples, max amplitude: \(maxAmplitude, privacy: .public), RMS: \(rms, privacy: .public)")
         }
 
         // Track pending task before starting

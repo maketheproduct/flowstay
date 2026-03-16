@@ -204,6 +204,21 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     }
 
     private func handleTranscriptionCompletion(finalText: String, duration: TimeInterval) async {
+        // The callback fired — cancel the safety timeout immediately.
+        // The overlay stays on .processing (isAwaitingTranscriptionCompletion remains true)
+        // until we finish and call consumeAwaitingOverlayCompletion() at the end.
+        cancelOverlayProcessingTimeout()
+
+        // Safety net: always clear the processing overlay state, even if something
+        // below crashes or hangs. The normal path clears it via consumeAwaitingOverlayCompletion().
+        defer {
+            if isAwaitingTranscriptionCompletion {
+                logger.warning("[AppDelegate] Safety defer: clearing stuck isAwaitingTranscriptionCompletion")
+                _ = consumeAwaitingOverlayCompletion()
+                applyOverlayVisibility(reason: "transcription-callback-safety-cleanup")
+            }
+        }
+
         guard let appState, let permissionManager, let personasEngine else {
             logger.error("[AppDelegate] Missing required state objects in transcription callback")
             return
@@ -555,6 +570,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         case .hidden:
             if !overlayIsEnabled {
                 cancelOverlayProcessingTimeout()
+                isAwaitingTranscriptionCompletion = false
                 clearOverlayOutcome()
             } else if let overlayOutcomeVisibleUntil, overlayOutcomeVisibleUntil <= now {
                 clearOverlayOutcome()
@@ -638,9 +654,11 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
         guard wasRecording else { return }
 
-        isAwaitingTranscriptionCompletion = true
-        clearOverlayOutcome()
-        startOverlayProcessingTimeout()
+        if !isAwaitingTranscriptionCompletion {
+            isAwaitingTranscriptionCompletion = true
+            clearOverlayOutcome()
+            startOverlayProcessingTimeout()
+        }
         applyOverlayVisibility(reason: "recording-stopped-awaiting-transcription")
     }
 
@@ -655,7 +673,9 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
             await MainActor.run {
                 guard let self else { return }
-                guard self.isAwaitingTranscriptionCompletion, !self.engineCoordinator.isRecording else { return }
+                guard self.isAwaitingTranscriptionCompletion, !self.engineCoordinator.isRecording else {
+                    return
+                }
 
                 self.logger.warning("[AppDelegate] Overlay processing timeout reached; showing error state")
                 if self.consumeAwaitingOverlayCompletion() {
@@ -806,6 +826,12 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
             case .stopRecording:
                 setHotkeyStartPending(false)
+                if engineCoordinator.isRecording {
+                    isAwaitingTranscriptionCompletion = true
+                    clearOverlayOutcome()
+                    startOverlayProcessingTimeout()
+                    applyOverlayVisibility(reason: "recording-stop-initiated")
+                }
                 Task { @MainActor [weak self] in
                     await self?.engineCoordinator.stopRecording()
                 }
@@ -1019,15 +1045,32 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         logger.info("[AppDelegate] Registered for URL events")
     }
 
-    @objc private func handleURLEvent(_ event: NSAppleEventDescriptor, withReplyEvent _: NSAppleEventDescriptor) {
+    /// `nonisolated` so the Apple-Event dispatcher can invoke the selector
+    /// without triggering a `_checkExpectedExecutor` crash.
+    @objc nonisolated private func handleURLEvent(
+        _ event: NSAppleEventDescriptor,
+        withReplyEvent _: NSAppleEventDescriptor
+    ) {
         guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
               let url = URL(string: urlString)
         else {
-            logger.info("[AppDelegate] Invalid URL event received")
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.logger.info("[AppDelegate] Invalid URL event received")
+                }
+            }
             return
         }
 
-        logger.info("[AppDelegate] URL event received: \(url.scheme ?? "unknown")://\(url.host ?? "")\(url.path)")
+        let scheme = url.scheme ?? "unknown"
+        let host = url.host ?? ""
+        let path = url.path
+
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                self.logger.info("[AppDelegate] URL event received: \(scheme)://\(host)\(path)")
+            }
+        }
 
         // Note: OpenRouter OAuth now uses localhost:3000 callback server instead of URL scheme
         // This handler remains for potential future URL scheme integrations
@@ -1037,11 +1080,19 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 // MARK: - Popover Control
 
 extension FlowstayAppDelegate {
-    @objc func togglePopover() {
-        if popover.isShown {
-            closePopover()
-        } else {
-            showPopover()
+    /// `nonisolated` so the Objective-C runtime can call the selector without
+    /// triggering a `_checkExpectedExecutor` crash when it dispatches from a
+    /// non-main thread.  We bounce back to the main thread explicitly.
+    @objc nonisolated func togglePopover() {
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                guard self.popover != nil else { return }
+                if self.popover.isShown {
+                    self.closePopover()
+                } else {
+                    self.showPopover()
+                }
+            }
         }
     }
 

@@ -1,5 +1,17 @@
-import FluidAudio
+@preconcurrency import FluidAudio
 import Foundation
+import os
+
+/// Thrown when a transcription attempt exceeds the allowed timeout
+private struct TranscriptionTimeoutError: Error {}
+
+/// Wrapper to pass non-Sendable AsrManager across isolation boundaries.
+/// SAFETY: Access is serialized by the enclosing ChunkedRecordingManager actor — only
+/// one detached task touches the manager at a time.
+private final class UnsafeAsrManagerBox: @unchecked Sendable {
+    nonisolated(unsafe) let manager: AsrManager
+    nonisolated init(_ manager: AsrManager) { self.manager = manager }
+}
 
 /// Manages chunked audio recording for memory-efficient, unlimited-length transcription
 ///
@@ -11,6 +23,8 @@ import Foundation
 /// - Deduplicating overlapping text when stitching chunk results
 public actor ChunkedRecordingManager {
     // MARK: - Configuration
+
+    private let logger = Logger(subsystem: "com.flowstay.app", category: "ChunkedRecordingManager")
 
     /// Target chunk duration before looking for a silence boundary
     private let targetChunkDuration: TimeInterval = 180 // 3 minutes
@@ -93,7 +107,6 @@ public actor ChunkedRecordingManager {
         recordingStartTime = Date()
         currentChunkStartTime = Date()
         lastAudioActivityTime = Date()
-        print("[ChunkedRecordingManager] Started new recording session")
     }
 
     /// Append audio samples from the microphone
@@ -123,17 +136,30 @@ public actor ChunkedRecordingManager {
     /// Finalize recording and get the complete transcription
     /// - Returns: The full transcription text from all chunks
     public func finalize() async -> (text: String, metrics: RecordingMetrics) {
-        print("[ChunkedRecordingManager] Finalizing recording...")
-
         // Process any remaining audio in the current chunk
         if !currentChunkBuffer.isEmpty {
             await finalizeCurrentChunk()
         }
 
-        // Wait for any pending transcription to complete
+        // Wait for any pending transcription to complete (with 35s timeout)
         if let pending = pendingTranscription {
-            print("[ChunkedRecordingManager] Waiting for pending transcription...")
-            await pending.value
+            let completed = await withTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    await pending.value
+                    return true
+                }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 35_000_000_000)
+                    return false
+                }
+                let first = await group.next()!
+                group.cancelAll()
+                return first
+            }
+            if !completed {
+                logger.warning("[ChunkedRecordingManager] Pending transcription timed out after 35s, continuing with available results")
+                pending.cancel()
+            }
         }
 
         // Calculate total duration
@@ -158,7 +184,7 @@ public actor ChunkedRecordingManager {
             errorMessages: errorMessages
         )
 
-        print("[ChunkedRecordingManager] Finalized: \(completedChunks.count) chunks, \(finalText.count) chars")
+        logger.info("[ChunkedRecordingManager] Finalized: \(self.completedChunks.count, privacy: .public) chunks, \(finalText.count, privacy: .public) chars")
 
         return (finalText, metrics)
     }
@@ -178,7 +204,6 @@ public actor ChunkedRecordingManager {
         transcriptionTimes.removeAll()
         errorMessages.removeAll()
         recordingStartTime = nil
-        print("[ChunkedRecordingManager] Reset complete")
     }
 
     /// Get current buffer size in samples
@@ -202,7 +227,6 @@ public actor ChunkedRecordingManager {
 
         // Hard limit: always finalize at max duration
         if chunkDuration >= maxChunkDuration {
-            print("[ChunkedRecordingManager] Chunk hit max duration (\(Int(maxChunkDuration))s), finalizing")
             return true
         }
 
@@ -216,7 +240,6 @@ public actor ChunkedRecordingManager {
             if let lastActivity = lastAudioActivityTime {
                 let silenceDuration = Date().timeIntervalSince(lastActivity)
                 if silenceDuration >= silenceThresholdForChunk {
-                    print("[ChunkedRecordingManager] Natural silence boundary detected after \(String(format: "%.1f", chunkDuration))s")
                     return true
                 }
             }
@@ -230,15 +253,12 @@ public actor ChunkedRecordingManager {
         let chunkIndex = completedChunks.count
         let chunkDuration = getCurrentChunkDuration()
 
-        print("[ChunkedRecordingManager] Finalizing chunk \(chunkIndex) (\(String(format: "%.1f", chunkDuration))s, \(currentChunkBuffer.count) samples)")
-
         // Prepare samples for transcription
         var samplesToTranscribe: [Float] = []
 
         // Prepend overlap from previous chunk (if any)
         if !overlapBuffer.isEmpty {
             samplesToTranscribe.append(contentsOf: overlapBuffer)
-            print("[ChunkedRecordingManager] Prepended \(overlapBuffer.count) overlap samples")
         }
 
         // Add current chunk's audio
@@ -277,11 +297,13 @@ public actor ChunkedRecordingManager {
         }
     }
 
+    /// Timeout for a single transcription attempt (seconds)
+    private let transcriptionTimeout: UInt64 = 30_000_000_000 // 30 seconds
+
     /// Transcribe a single chunk's audio
     private func transcribeChunk(_ samples: [Float], chunkIndex: Int) async -> ChunkResult {
         guard let manager = asrManager else {
-            let error = "ASR manager not available for chunk \(chunkIndex)"
-            print("[ChunkedRecordingManager] ❌ \(error)")
+            logger.error("[ChunkedRecordingManager] ASR manager not available for chunk \(chunkIndex, privacy: .public)")
             return ChunkResult(
                 index: chunkIndex,
                 text: failedChunkPlaceholder,
@@ -289,38 +311,94 @@ public actor ChunkedRecordingManager {
             )
         }
 
-        // Try transcription with one retry
+        // Try transcription with one retry, each attempt with a 30s timeout
         for attempt in 1 ... 2 {
             do {
-                let result = try await manager.transcribe(samples, source: .system)
+                let result = try await transcribeWithTimeout(
+                    manager: manager,
+                    samples: samples,
+                    timeoutNanoseconds: transcriptionTimeout
+                )
                 let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-                print("[ChunkedRecordingManager] ✅ Chunk \(chunkIndex) transcribed (\(text.count) chars)")
 
                 return ChunkResult(
                     index: chunkIndex,
                     text: text,
                     hadError: false
                 )
+            } catch is TranscriptionTimeoutError {
+                logger.warning("[ChunkedRecordingManager] Chunk \(chunkIndex, privacy: .public) transcription attempt \(attempt, privacy: .public) timed out after 30s")
             } catch {
-                print("[ChunkedRecordingManager] ⚠️ Chunk \(chunkIndex) transcription attempt \(attempt) failed: \(error)")
+                logger.warning("[ChunkedRecordingManager] Chunk \(chunkIndex, privacy: .public) transcription attempt \(attempt, privacy: .public) failed: \(error, privacy: .public)")
+            }
 
-                if attempt < 2 {
-                    // Retry after brief delay
-                    try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
-                }
+            if attempt < 2 {
+                // Retry after brief delay
+                try? await Task.sleep(nanoseconds: 500_000_000) // 500ms
             }
         }
 
         // Both attempts failed
-        let error = "Chunk \(chunkIndex) transcription failed after 2 attempts"
-        print("[ChunkedRecordingManager] ❌ \(error)")
+        logger.error("[ChunkedRecordingManager] Chunk \(chunkIndex, privacy: .public) transcription failed after 2 attempts")
 
         return ChunkResult(
             index: chunkIndex,
             text: failedChunkPlaceholder,
             hadError: true
         )
+    }
+
+    /// Run transcription with a timeout. Uses a continuation + detached tasks
+    /// to race the transcription against a timeout watchdog.
+    /// SAFETY: AsrManager is wrapped in UnsafeSendableBox; actual access is
+    /// serialized by the detached task (only one touches it).
+    private func transcribeWithTimeout(
+        manager: AsrManager,
+        samples: [Float],
+        timeoutNanoseconds: UInt64
+    ) async throws -> ASRResult {
+        let box = UnsafeAsrManagerBox(manager)
+        let finished = OSAllocatedUnfairLock(initialState: false)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            // Transcription task
+            let work = Task.detached {
+                do {
+                    let result = try await box.manager.transcribe(samples, source: .system)
+                    let shouldResume = finished.withLock { done -> Bool in
+                        guard !done else { return false }
+                        done = true
+                        return true
+                    }
+                    if shouldResume {
+                        continuation.resume(returning: result)
+                    }
+                } catch {
+                    let shouldResume = finished.withLock { done -> Bool in
+                        guard !done else { return false }
+                        done = true
+                        return true
+                    }
+                    if shouldResume {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+
+            // Timeout watchdog
+            Task.detached {
+                try? await Task.sleep(nanoseconds: timeoutNanoseconds)
+                let shouldResume = finished.withLock { done -> Bool in
+                    guard !done else { return false }
+                    done = true
+                    return true
+                }
+                if shouldResume {
+                    work.cancel()
+                    continuation.resume(throwing: TranscriptionTimeoutError())
+                }
+            }
+        }
     }
 
     /// Record a completed chunk's result
@@ -367,8 +445,6 @@ public actor ChunkedRecordingManager {
                 if !remainingWords.isEmpty {
                     result += " " + remainingWords.joined(separator: " ")
                 }
-
-                print("[ChunkedRecordingManager] Deduplicated \(overlap.count) words at boundary")
             } else {
                 // No overlap found, just concatenate with space
                 result += " " + nextChunk

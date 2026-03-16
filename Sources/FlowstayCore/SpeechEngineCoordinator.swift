@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import Combine
+import os
 import Speech
 import SwiftUI
 
@@ -8,6 +9,8 @@ import SwiftUI
 
 /// Coordinates speech recognition engine lifecycle and manages recording state
 public class EngineCoordinatorViewModel: ObservableObject {
+    private let logger = Logger(subsystem: "com.flowstay.app", category: "EngineCoordinator")
+
     public enum PrewarmBehavior {
         case modelsOnly
         case modelsAndAudio
@@ -84,7 +87,8 @@ public class EngineCoordinatorViewModel: ObservableObject {
         // Set up completion callback
         fluidAudioSpeechRecognition?.onTranscriptionComplete = { [weak self] finalText, duration in
             Task { @MainActor [weak self] in
-                self?.onTranscriptionComplete?(finalText, duration)
+                guard let self else { return }
+                self.onTranscriptionComplete?(finalText, duration)
             }
         }
 
@@ -100,7 +104,6 @@ public class EngineCoordinatorViewModel: ObservableObject {
     /// Uses fast-path loading if models are already cached, otherwise downloads.
     public func preInitializeAllModels(prewarmBehavior: PrewarmBehavior = .modelsAndAudio) async {
         if let modelPreparationTask {
-            print("[EngineCoordinatorViewModel] Joining in-flight model preparation task")
             await modelPreparationTask.value
             if prewarmBehavior == .modelsAndAudio {
                 _ = await prewarmRecordingPipelineIfNeeded()
@@ -127,7 +130,6 @@ public class EngineCoordinatorViewModel: ObservableObject {
             // Fast-path: Try loading cached models first (avoids download)
             do {
                 try await fluidAudio.loadModelsIfAvailable()
-                print("[EngineCoordinatorViewModel] ✅ Models loaded from cache (fast-path)")
                 isModelsReady = fluidAudio.isModelsReady
                 if isModelsReady, prewarmBehavior == .modelsAndAudio {
                     _ = await prewarmRecordingPipelineIfNeeded()
@@ -135,7 +137,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
                 engineError = nil
                 return
             } catch {
-                print("[EngineCoordinatorViewModel] Cache load failed, falling back to download: \(error)")
+                // Cache load failed, falling back to download
             }
 
             // Fallback: Download and initialize if cache load failed
@@ -147,7 +149,6 @@ public class EngineCoordinatorViewModel: ObservableObject {
             engineError = nil
 
             // Send notification when download completes (not for cache loads)
-            // Check permission status before sending
             let hasPermission = await NotificationManager.shared.checkPermissionStatus()
             if hasPermission {
                 await MainActor.run {
@@ -157,9 +158,6 @@ public class EngineCoordinatorViewModel: ObservableObject {
                         identifier: "models-downloaded"
                     )
                 }
-                print("[EngineCoordinatorViewModel] ✅ Sent model download completion notification")
-            } else {
-                print("[EngineCoordinatorViewModel] ⏭️ Skipping notification - permissions not granted")
             }
         } catch {
             engineError = "Model download failed: \(error.localizedDescription)"
@@ -199,17 +197,8 @@ public class EngineCoordinatorViewModel: ObservableObject {
     }
 
     public func startRecording() async throws {
-        print("[EngineCoordinatorViewModel] Starting recording with FluidAudio")
-
-        if isTransitioningRecordingState {
-            print("[EngineCoordinatorViewModel] Start ignored - state transition already in progress")
-            return
-        }
-
-        if isRecording {
-            print("[EngineCoordinatorViewModel] Start ignored - already recording")
-            return
-        }
+        if isTransitioningRecordingState { return }
+        if isRecording { return }
 
         isTransitioningRecordingState = true
         defer { isTransitioningRecordingState = false }
@@ -221,7 +210,6 @@ public class EngineCoordinatorViewModel: ObservableObject {
 
         // Check if models are ready before attempting to record
         if !fluidAudioSpeechRecognition.isModelsReady {
-            print("[EngineCoordinatorViewModel] ⚠️ Models not ready, attempting to initialize...")
             engineError = "Please download the speech recognition model first"
             throw NSError(domain: "EngineCoordinatorViewModel", code: 2, userInfo: [NSLocalizedDescriptionKey: "Speech recognition models not downloaded. Please complete onboarding first."])
         }
@@ -249,17 +237,8 @@ public class EngineCoordinatorViewModel: ObservableObject {
     /// Stop recording and finalize transcription
     /// Note: Audio finalization happens asynchronously - completion is signaled via onTranscriptionComplete callback
     public func stopRecording() async {
-        print("[EngineCoordinatorViewModel] Stopping recording")
-
-        if isTransitioningRecordingState {
-            print("[EngineCoordinatorViewModel] Stop ignored - state transition already in progress")
-            return
-        }
-
-        if !isRecording {
-            print("[EngineCoordinatorViewModel] Stop ignored - not currently recording")
-            return
-        }
+        if isTransitioningRecordingState { return }
+        if !isRecording { return }
 
         isTransitioningRecordingState = true
         defer { isTransitioningRecordingState = false }
@@ -280,7 +259,5 @@ public class EngineCoordinatorViewModel: ObservableObject {
 
     /// FluidAudio is the only engine, so no switching needed
     /// This method is kept for compatibility but does nothing
-    public func switchEngine(to _: SpeechEngineType) async {
-        print("[EngineCoordinatorViewModel] FluidAudio is the only available engine")
-    }
+    public func switchEngine(to _: SpeechEngineType) async {}
 }
