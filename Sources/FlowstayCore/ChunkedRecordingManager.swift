@@ -186,6 +186,7 @@ public actor ChunkedRecordingManager {
             errorMessages: errorMessages
         )
 
+        // swiftformat:disable:next redundantSelf
         logger.info("[ChunkedRecordingManager] Finalized: \(self.completedChunks.count, privacy: .public) chunks, \(finalText.count, privacy: .public) chars")
 
         return (finalText, metrics)
