@@ -39,6 +39,9 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     /// Track if user has initiated stop
     private var userInitiatedStop = false
 
+    /// Safety watchdog task — cancelled when real completion fires
+    private var safetyWatchdogTask: Task<Void, Never>?
+
     // FluidAudio components - nonisolated(unsafe) because AsrManager/AsrModels aren't Sendable
     /// SAFETY: nonisolated(unsafe) for AsrManager/AsrModels because they don't conform to Sendable.
     /// Thread safety is guaranteed by MainActor isolation - all access to these properties
@@ -474,9 +477,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         let proxy = tapProxy
 
         // Safety watchdog: if the cleanup chain below hasn't fired onTranscriptionComplete
-        // within 15 seconds, force-fire it so the UI never gets stuck in "processing".
-        Task { @MainActor [weak self, completionLock] in
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
+        // within 40 seconds (must exceed 35s finalize timeout + margin), force-fire it so
+        // the UI never gets stuck in "processing".
+        safetyWatchdogTask = Task { @MainActor [weak self, completionLock] in
+            try? await Task.sleep(nanoseconds: 40_000_000_000)
+            guard !Task.isCancelled else { return }
             guard let self else { return }
             let shouldForce = completionLock.withLock {
                 let should = !self.hasCalledCompletion
@@ -484,7 +489,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                 return should
             }
             if shouldForce {
-                self.logger.warning("[FluidAudio] Safety timeout — forcing completion after 15s")
+                self.logger.warning("[FluidAudio] Safety timeout — forcing completion after 40s")
                 self.onTranscriptionComplete?(self.transcription, 0)
             }
         }
@@ -583,6 +588,10 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     /// Finalize chunked recording and get complete transcription
     private func finalizeChunkedTranscription(diagnostics: StopFinalizationDiagnostics? = nil) async {
         logger.info("[FluidAudioSpeechRecognition] Finalizing chunked transcription...")
+
+        // Cancel the safety watchdog — real completion is about to fire
+        safetyWatchdogTask?.cancel()
+        safetyWatchdogTask = nil
 
         // Get final transcription and metrics from chunked recording manager
         let (finalText, metrics) = await chunkedRecordingManager.finalize()

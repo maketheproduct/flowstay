@@ -135,9 +135,18 @@ private struct PasteboardSnapshot {
 
     static func capture(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
         let captured = pasteboard.pasteboardItems?.map { item -> [(NSPasteboard.PasteboardType, Data)] in
-            item.types.compactMap { type in
-                guard let data = item.data(forType: type) else { return nil }
-                return (type, data)
+            item.types.compactMap { type -> (NSPasteboard.PasteboardType, Data)? in
+                if let data = item.data(forType: type) {
+                    return (type, data)
+                }
+                // Fallback: some representations use lazy/on-demand providers where
+                // data(forType:) returns nil. Try string(forType:) for text-based types.
+                if let string = item.string(forType: type),
+                   let data = string.data(using: .utf8)
+                {
+                    return (type, data)
+                }
+                return nil
             }
         } ?? []
         return PasteboardSnapshot(itemData: captured)
