@@ -605,7 +605,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             // Update UI with final transcription
             transcription = trimmedText
 
-            logger.info("[FluidAudioSpeechRecognition] Transcription complete (\(trimmedText.count, privacy: .public) chars, \(metrics.chunkCount, privacy: .public) chunks, \(String(format: "%.1f", metrics.totalDuration), privacy: .public)s)")
+            let duration = String(format: "%.1f", metrics.totalDuration)
+            logger.info("[FluidAudioSpeechRecognition] Transcription complete (\(trimmedText.count, privacy: .public) chars, \(metrics.chunkCount, privacy: .public) chunks, \(duration, privacy: .public)s)")
         } else {
             logger.warning("[FluidAudioSpeechRecognition] Transcription returned empty text")
         }
