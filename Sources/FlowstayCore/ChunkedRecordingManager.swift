@@ -327,7 +327,8 @@ public actor ChunkedRecordingManager {
                     hadError: false
                 )
             } catch is TranscriptionTimeoutError {
-                logger.warning("[ChunkedRecordingManager] Chunk \(chunkIndex, privacy: .public) transcription attempt \(attempt, privacy: .public) timed out after 30s")
+                logger.warning("[ChunkedRecordingManager] Chunk \(chunkIndex, privacy: .public) transcription attempt \(attempt, privacy: .public) timed out after 30s — not retrying (ASR may still be running)")
+                break
             } catch {
                 logger.warning("[ChunkedRecordingManager] Chunk \(chunkIndex, privacy: .public) transcription attempt \(attempt, privacy: .public) failed: \(error, privacy: .public)")
             }
