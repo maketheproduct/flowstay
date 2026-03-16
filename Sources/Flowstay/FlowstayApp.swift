@@ -1047,7 +1047,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
     /// `nonisolated` so the Apple-Event dispatcher can invoke the selector
     /// without triggering a `_checkExpectedExecutor` crash.
-    @objc nonisolated private func handleURLEvent(
+    @objc private nonisolated func handleURLEvent(
         _ event: NSAppleEventDescriptor,
         withReplyEvent _: NSAppleEventDescriptor
     ) {

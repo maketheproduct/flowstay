@@ -88,7 +88,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
         fluidAudioSpeechRecognition?.onTranscriptionComplete = { [weak self] finalText, duration in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                self.onTranscriptionComplete?(finalText, duration)
+                onTranscriptionComplete?(finalText, duration)
             }
         }
 

@@ -10,7 +10,9 @@ private struct TranscriptionTimeoutError: Error {}
 /// one detached task touches the manager at a time.
 private final class UnsafeAsrManagerBox: @unchecked Sendable {
     nonisolated(unsafe) let manager: AsrManager
-    nonisolated init(_ manager: AsrManager) { self.manager = manager }
+    nonisolated init(_ manager: AsrManager) {
+        self.manager = manager
+    }
 }
 
 /// Manages chunked audio recording for memory-efficient, unlimited-length transcription
@@ -184,7 +186,7 @@ public actor ChunkedRecordingManager {
             errorMessages: errorMessages
         )
 
-        logger.info("[ChunkedRecordingManager] Finalized: \(self.completedChunks.count, privacy: .public) chunks, \(finalText.count, privacy: .public) chars")
+        logger.info("[ChunkedRecordingManager] Finalized: \(completedChunks.count, privacy: .public) chunks, \(finalText.count, privacy: .public) chars")
 
         return (finalText, metrics)
     }

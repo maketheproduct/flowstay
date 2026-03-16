@@ -489,8 +489,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                 return should
             }
             if shouldForce {
-                self.logger.warning("[FluidAudio] Safety timeout — forcing completion after 40s")
-                self.onTranscriptionComplete?(self.transcription, 0)
+                logger.warning("[FluidAudio] Safety timeout — forcing completion after 40s")
+                onTranscriptionComplete?(transcription, 0)
             }
         }
 
@@ -861,7 +861,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
             Task { [weak self] in
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
                 guard let self else { return }
-                self.pendingTasksLock.withLock {
+                pendingTasksLock.withLock {
                     if let stale = self.allTasksCompletedContinuation {
                         self.allTasksCompletedContinuation = nil
                         stale.resume(returning: false)
@@ -901,7 +901,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
 
         // Log every tap for debugging microphone issues
         if tapCount <= 10 || tapCount % 10 == 0 { // Log first 10 taps, then every 10th
-            logger.debug("[FluidAudioTapProxy] Tap #\(self.tapCount, privacy: .public): buffer frameLength=\(buffer.frameLength, privacy: .public), format=\(buffer.format, privacy: .public)")
+            logger.debug("[FluidAudioTapProxy] Tap #\(tapCount, privacy: .public): buffer frameLength=\(buffer.frameLength, privacy: .public), format=\(buffer.format, privacy: .public)")
         }
 
         // Convert to 16kHz mono
@@ -944,7 +944,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
         // Log periodically for debugging - more frequent initially
         if tapCount <= 10 || tapCount % 10 == 0 { // Log first 10 taps, then every 10th
             let maxAmplitude = samples.map { abs($0) }.max() ?? 0
-            logger.debug("[FluidAudioTapProxy] Tap #\(self.tapCount, privacy: .public): \(samples.count, privacy: .public) samples, max amplitude: \(maxAmplitude, privacy: .public), RMS: \(rms, privacy: .public)")
+            logger.debug("[FluidAudioTapProxy] Tap #\(tapCount, privacy: .public): \(samples.count, privacy: .public) samples, max amplitude: \(maxAmplitude, privacy: .public), RMS: \(rms, privacy: .public)")
         }
 
         // Track pending task before starting
