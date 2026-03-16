@@ -553,6 +553,14 @@ private struct LiveDictationSceneView: View {
                 .buttonStyle(.borderedProminent)
                 .tint(theme.accent)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
+            } else if !coordinator.isRecordingFirstWin {
+                Button("Skip for now") {
+                    coordinator.skipTutorial()
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(theme.tertiaryText)
+                .transition(.opacity)
             }
         }
         .animation(.spring(response: 0.24, dampingFraction: 0.9), value: coordinator.canContinueFromTutorial)

@@ -130,20 +130,29 @@ public class TextPaster {
 }
 
 private struct PasteboardSnapshot {
-    let items: [NSPasteboardItem]
+    /// Each captured item stores its data keyed by pasteboard type.
+    let itemData: [[(NSPasteboard.PasteboardType, Data)]]
 
     static func capture(from pasteboard: NSPasteboard) -> PasteboardSnapshot {
-        let copiedItems = pasteboard.pasteboardItems?.compactMap { item in
-            item.copy() as? NSPasteboardItem
+        let captured = pasteboard.pasteboardItems?.map { item -> [(NSPasteboard.PasteboardType, Data)] in
+            item.types.compactMap { type in
+                guard let data = item.data(forType: type) else { return nil }
+                return (type, data)
+            }
         } ?? []
-        return PasteboardSnapshot(items: copiedItems)
+        return PasteboardSnapshot(itemData: captured)
     }
 
     @MainActor
     func restore(to pasteboard: NSPasteboard) {
         pasteboard.clearContents()
-        if !items.isEmpty {
-            pasteboard.writeObjects(items)
+        for itemEntries in itemData {
+            guard !itemEntries.isEmpty else { continue }
+            let item = NSPasteboardItem()
+            for (type, data) in itemEntries {
+                item.setData(data, forType: type)
+            }
+            pasteboard.writeObjects([item])
         }
     }
 }

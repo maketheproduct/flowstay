@@ -309,6 +309,35 @@ final class OnboardingCoordinator: ObservableObject {
         tutorialStep == .complete && !isRecordingFirstWin
     }
 
+    /// Skip the tutorial entirely and advance to quickSetup
+    func skipTutorial() {
+        // Cancel any in-progress recording - stop BEFORE clearing state
+        let wasRecording = isRecordingFirstWin || engineCoordinator.isRecording
+
+        // Clear tutorial state
+        toggleModeCompleted = true
+        holdModeCompleted = true
+        tutorialStep = .complete
+        isRecordingFirstWin = false
+        firstWinError = nil
+
+        if wasRecording {
+            // Keep activeTutorialMode temporarily so cleanup works properly
+            Task {
+                await engineCoordinator.stopRecording()
+                await MainActor.run {
+                    activeTutorialMode = nil
+                }
+            }
+        } else {
+            activeTutorialMode = nil
+        }
+
+        // Advance to quickSetup
+        navigationDirection = .forward
+        currentScene = .quickSetup
+    }
+
     var canDeferModelDownload: Bool {
         currentScene == .readiness &&
             microphoneStatus == .authorized &&

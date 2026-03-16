@@ -45,14 +45,7 @@ public class GlobalShortcutsManager {
         onHotkeyEvent: @escaping (HotkeyInputEvent) -> Void,
         onFeedback: @escaping (HotkeyFeedbackEvent) -> Void
     ) {
-        guard !_isInitialized else {
-            print("[GlobalShortcutsManager] Already initialized, skipping")
-            return
-        }
-
-        print("[GlobalShortcutsManager] Starting initialization...")
-        print("[GlobalShortcutsManager] App bundle ID: \(Bundle.main.bundleIdentifier ?? "unknown")")
-        print("[GlobalShortcutsManager] Activation policy: \(NSApplication.shared.activationPolicy().rawValue)")
+        guard !_isInitialized else { return }
 
         hotkeyEventHandler = onHotkeyEvent
         feedbackHandler = onFeedback
@@ -61,13 +54,9 @@ public class GlobalShortcutsManager {
         _ = KeyboardShortcuts.Name.holdToTalk
         setupGlobalHotkey()
         _isInitialized = true
-
-        print("[GlobalShortcutsManager] Keyboard shortcuts initialized successfully")
     }
 
     private static func setupGlobalHotkey() {
-        print("[GlobalShortcutsManager] Setting up global hotkey...")
-
         // Cancel any existing listener task.
         toggleShortcutListenerTask?.cancel()
         toggleShortcutListenerTask = nil
@@ -81,21 +70,14 @@ public class GlobalShortcutsManager {
         // Set default only when user has not customized a shortcut.
         if KeyboardShortcuts.getShortcut(for: .toggleDictation) == nil {
             let defaultShortcut = KeyboardShortcuts.Shortcut(.space, modifiers: [.option])
-            print("[GlobalShortcutsManager] Applying default shortcut (Option+Space)")
             KeyboardShortcuts.setShortcut(defaultShortcut, for: .toggleDictation)
-        } else {
-            print("[GlobalShortcutsManager] Existing shortcut detected, preserving custom value")
         }
 
         let verifyShortcut = KeyboardShortcuts.getShortcut(for: .toggleDictation)
-        if verifyShortcut != nil {
-            print("[GlobalShortcutsManager] Shortcut verified successfully")
-        } else {
-            print("[GlobalShortcutsManager] Shortcut verification failed")
+        if verifyShortcut == nil {
             feedbackHandler?(.error)
         }
 
-        print("[GlobalShortcutsManager] Starting async event listeners...")
         startToggleShortcutListener()
         startHoldShortcutListener()
 
@@ -104,55 +86,38 @@ public class GlobalShortcutsManager {
         }
         functionKeyGlobalMonitor = monitors.global
         functionKeyLocalMonitor = monitors.local
-
-        print("[GlobalShortcutsManager] Global hotkey listener registered")
     }
 
     private static func startToggleShortcutListener() {
         toggleShortcutListenerTask = Task { @MainActor in
             var lastHotkeyTime: Date?
 
-            print("[GlobalShortcutsManager] Toggle shortcut listener task started")
-
             for await event in KeyboardShortcuts.events(for: .toggleDictation) {
-                if Task.isCancelled {
-                    print("[GlobalShortcutsManager] Toggle shortcut listener cancelled, exiting")
-                    break
-                }
+                if Task.isCancelled { break }
 
                 switch event {
                 case .keyDown:
                     if let lastTime = lastHotkeyTime,
                        Date().timeIntervalSince(lastTime) < debounceInterval
                     {
-                        print("[GlobalShortcutsManager] Debounced rapid keypress (within \(Int(debounceInterval * 1000))ms)")
                         feedbackHandler?(.blockedTransition)
                         continue
                     }
                     lastHotkeyTime = Date()
-                    print("[GlobalShortcutsManager] SHORTCUT KEY DOWN")
                     feedbackHandler?(.accepted)
                     hotkeyEventHandler?(.shortcutKeyDown)
 
                 case .keyUp:
-                    print("[GlobalShortcutsManager] SHORTCUT KEY UP")
                     hotkeyEventHandler?(.shortcutKeyUp)
                 }
             }
-
-            print("[GlobalShortcutsManager] Toggle shortcut listener task ended")
         }
     }
 
     private static func startHoldShortcutListener() {
         holdShortcutListenerTask = Task { @MainActor in
-            print("[GlobalShortcutsManager] Hold shortcut listener task started")
-
             for await event in KeyboardShortcuts.events(for: .holdToTalk) {
-                if Task.isCancelled {
-                    print("[GlobalShortcutsManager] Hold shortcut listener cancelled, exiting")
-                    break
-                }
+                if Task.isCancelled { break }
 
                 if holdShortcutConflictsWithToggle() {
                     if isHoldShortcutPressed {
@@ -166,17 +131,13 @@ public class GlobalShortcutsManager {
                 case .keyDown:
                     guard !isHoldShortcutPressed else { continue }
                     isHoldShortcutPressed = true
-                    print("[GlobalShortcutsManager] HOLD SHORTCUT KEY DOWN")
                     updateHoldInputState()
                 case .keyUp:
                     guard isHoldShortcutPressed else { continue }
                     isHoldShortcutPressed = false
-                    print("[GlobalShortcutsManager] HOLD SHORTCUT KEY UP")
                     updateHoldInputState()
                 }
             }
-
-            print("[GlobalShortcutsManager] Hold shortcut listener task ended")
         }
     }
 
@@ -225,10 +186,8 @@ public class GlobalShortcutsManager {
 
         isHoldInputPressed = holdPressedNow
         if holdPressedNow {
-            print("[GlobalShortcutsManager] HOLD INPUT DOWN")
             hotkeyEventHandler?(.functionKeyDown)
         } else {
-            print("[GlobalShortcutsManager] HOLD INPUT UP")
             hotkeyEventHandler?(.functionKeyUp)
         }
     }
@@ -246,7 +205,6 @@ public class GlobalShortcutsManager {
 
     /// Stop listening for keyboard shortcuts (cleanup).
     public static func deinitialize() {
-        print("[GlobalShortcutsManager] Deinitializing...")
         toggleShortcutListenerTask?.cancel()
         toggleShortcutListenerTask = nil
         holdShortcutListenerTask?.cancel()
@@ -258,6 +216,5 @@ public class GlobalShortcutsManager {
         hotkeyEventHandler = nil
         feedbackHandler = nil
         _isInitialized = false
-        print("[GlobalShortcutsManager] Deinitialized")
     }
 }
