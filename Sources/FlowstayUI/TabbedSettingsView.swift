@@ -466,7 +466,7 @@ struct GeneralSettingsTab: View {
 
     private func shortcutDescription(_ shortcut: KeyboardShortcuts.Shortcut?) -> String? {
         guard let shortcut else { return nil }
-        return shortcut.description
+        return safeShortcutDescription(shortcut)
     }
 
     private func syncHotkeyState() {

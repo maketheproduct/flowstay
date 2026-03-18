@@ -1023,13 +1023,13 @@ final class OnboardingCoordinator: ObservableObject {
             holdShortcut: hotkeyHoldShortcut
         )
 
-        tutorialToggleShortcutDescription = hotkeyToggleShortcut.description
+        tutorialToggleShortcutDescription = safeShortcutDescription(hotkeyToggleShortcut)
 
         switch appState.holdToTalkInputSource {
         case .functionKey:
             tutorialHoldShortcutDescription = "Fn"
         case .alternativeShortcut:
-            tutorialHoldShortcutDescription = hotkeyHoldShortcut?.description ?? "Set hold shortcut"
+            tutorialHoldShortcutDescription = hotkeyHoldShortcut.map { safeShortcutDescription($0) } ?? "Set hold shortcut"
         }
     }
 

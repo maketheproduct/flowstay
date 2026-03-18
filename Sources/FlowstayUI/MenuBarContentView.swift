@@ -334,7 +334,7 @@ public struct MenuBarView: View {
 
     private var toggleShortcutPrompt: String {
         if let shortcut = KeyboardShortcuts.getShortcut(for: .toggleDictation) {
-            return shortcut.description
+            return safeShortcutDescription(shortcut)
         }
         return "⌥Space"
     }
