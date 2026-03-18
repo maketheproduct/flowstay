@@ -45,6 +45,7 @@ private func safeKeyDescription(_ key: KeyboardShortcuts.Key, carbonKeyCode: Int
     return "Key(\(carbonKeyCode))"
 }
 
+// swiftlint:disable:next cyclomatic_complexity
 private func specialKeyDescription(_ key: KeyboardShortcuts.Key) -> String? {
     switch key {
     case .return: return "↩"
