@@ -343,7 +343,7 @@ public enum RecoveryDiagnosticsService {
             RecoveryCheckResult(
                 id: "toggle-shortcut",
                 title: "Toggle shortcut",
-                detail: "Stored toggle shortcut decoded successfully as \(shortcut.description).",
+                detail: "Stored toggle shortcut decoded successfully as \(safeShortcutDescription(shortcut)).",
                 status: .healthy
             )
         case let .invalid(reason):
@@ -408,7 +408,7 @@ public enum RecoveryDiagnosticsService {
             return RecoveryCheckResult(
                 id: "hold-shortcut",
                 title: "Hold-to-talk shortcut",
-                detail: "Stored hold-to-talk shortcut decoded successfully as \(shortcut.description).",
+                detail: "Stored hold-to-talk shortcut decoded successfully as \(safeShortcutDescription(shortcut)).",
                 status: .healthy
             )
         case let .invalid(reason):
