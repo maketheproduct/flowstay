@@ -158,7 +158,7 @@ public struct MenuBarView: View {
             .padding(.horizontal, 16)
 
             // Permission warnings
-                if !permissionManager.criticalPermissionsGranted {
+            if !permissionManager.criticalPermissionsGranted {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 11))

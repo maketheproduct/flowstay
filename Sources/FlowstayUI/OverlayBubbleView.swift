@@ -369,7 +369,7 @@ private struct LoadingPulseIcon: View {
     }
 
     private func bars() -> some View {
-        return HStack(spacing: 1.6) {
+        HStack(spacing: 1.6) {
             ForEach(0 ..< 4, id: \.self) { index in
                 let wave = reduceMotion ? 0.35 : (0.4 + (0.15 * Double(index)))
                 let height = max(3.0, 4.0 + wave * Double(containerHeight - 6))

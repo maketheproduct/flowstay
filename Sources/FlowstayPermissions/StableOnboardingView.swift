@@ -723,7 +723,7 @@ private struct StableOnboardingSetupScene: View {
                     }
                 }
 
-                if isRequestingAccessibility && !permissionManager.hasAccessibilityPermission {
+                if isRequestingAccessibility, !permissionManager.hasAccessibilityPermission {
                     Text("Enable Flowstay in Privacy & Security > Accessibility, then return here.")
                         .font(.system(size: 12, weight: .medium))
                         .foregroundStyle(theme.secondaryText)
@@ -914,23 +914,7 @@ private struct StableSetupCard<Accessory: View>: View {
     let subtitle: String
     let systemImage: String
     let iconColor: Color
-    let accessory: () -> Accessory
-
-    init(
-        theme: OnboardingTheme,
-        title: String,
-        subtitle: String,
-        systemImage: String,
-        iconColor: Color,
-        @ViewBuilder accessory: @escaping () -> Accessory
-    ) {
-        self.theme = theme
-        self.title = title
-        self.subtitle = subtitle
-        self.systemImage = systemImage
-        self.iconColor = iconColor
-        self.accessory = accessory
-    }
+    @ViewBuilder let accessory: () -> Accessory
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {

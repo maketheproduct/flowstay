@@ -107,6 +107,7 @@ final class OnboardingAccessibilityPromptHandler {
     }
 }
 
+// swiftlint:disable type_body_length
 @MainActor
 final class OnboardingCoordinator: ObservableObject {
     enum NavigationDirection {
@@ -1181,6 +1182,8 @@ final class OnboardingCoordinator: ObservableObject {
             .store(in: &cancellables)
     }
 }
+
+// swiftlint:enable type_body_length
 
 // MARK: - Key Label Helpers
 
