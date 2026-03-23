@@ -7,7 +7,6 @@ import KeyboardShortcuts
 /// auto-generated resource bundle accessor cannot find the bundle inside the `.app`
 /// (the accessor looks at the app root, but `build_app.sh` places bundles in
 /// `Contents/Resources/`).
-@MainActor
 public func safeShortcutDescription(_ shortcut: KeyboardShortcuts.Shortcut) -> String {
     let modifiers = shortcut.modifiers
     var desc = ""
@@ -28,7 +27,6 @@ public func safeShortcutDescription(_ shortcut: KeyboardShortcuts.Shortcut) -> S
 
 /// Maps a `KeyboardShortcuts.Key` to a display string using only hardcoded symbols
 /// and Carbon keyboard layout APIs — no `Bundle.module` / `NSLocalizedString`.
-@MainActor
 private func safeKeyDescription(_ key: KeyboardShortcuts.Key, carbonKeyCode: Int) -> String {
     // Special keys — mirrors KeyboardShortcuts' SpecialKey enum but without
     // the `.localized` call that triggers Bundle.module for the space key.
@@ -107,7 +105,6 @@ private func specialKeyDescription(_ key: KeyboardShortcuts.Key) -> String? {
 
 /// Translates a Carbon key code to a character using the current ASCII-capable
 /// keyboard layout — the same approach `KeyboardShortcuts` uses internally.
-@MainActor
 private func characterForKeyCode(_ keyCode: Int) -> Character? {
     guard
         let source = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue(),

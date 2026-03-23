@@ -7,7 +7,7 @@ import SwiftUI
 // MARK: - Permission Manager
 
 /// Manages microphone and accessibility permissions for the app
-public class PermissionManager: ObservableObject {
+public class PermissionManager: ObservableObject, @unchecked Sendable {
     @Published public var microphoneStatus: PermissionStatus = .notDetermined
 
     @Published public var accessibilityStatus: PermissionStatus = .notDetermined
@@ -15,6 +15,7 @@ public class PermissionManager: ObservableObject {
     private var notificationObserver: NSObjectProtocol?
     private let logger = Logger(subsystem: "com.flowstay.core", category: "PermissionManager")
 
+    @MainActor
     public init() {
         // Don't check permissions on init to avoid crashes
         // Permissions will be checked when needed
@@ -40,6 +41,7 @@ public class PermissionManager: ObservableObject {
     }
 
     /// Clean up resources when done
+    @MainActor
     public func cleanup() {
         // Clean up notification observer
         if let observer = notificationObserver {
@@ -67,6 +69,7 @@ public class PermissionManager: ObservableObject {
     }
 
     /// Add async methods for requesting permissions
+    @MainActor
     public func requestMicrophonePermission() async {
         logger.info("[PermissionManager] Requesting microphone permission...")
 
@@ -95,6 +98,7 @@ public class PermissionManager: ObservableObject {
         logger.info("[PermissionManager] Microphone request completed: \(granted)")
     }
 
+    @MainActor
     public func requestAccessibilityPermission() async {
         logger.info("[PermissionManager] Requesting accessibility permission with proper registration...")
 
@@ -127,6 +131,7 @@ public class PermissionManager: ObservableObject {
     }
 
     /// Forces the app to register with the accessibility system by attempting to use accessibility features
+    @MainActor
     private func triggerAccessibilityRegistration() {
         logger.debug("[PermissionManager] Attempting accessibility operation to trigger registration...")
 
@@ -159,6 +164,7 @@ public class PermissionManager: ObservableObject {
         logger.debug("[PermissionManager] Accessibility registration attempts completed")
     }
 
+    @MainActor
     public func openAccessibilitySettings() {
         logger.info("[PermissionManager] Opening System Preferences > Accessibility...")
 
@@ -209,6 +215,7 @@ public class PermissionManager: ObservableObject {
     }
 
     /// Schedules periodic permission status checks after opening System Preferences
+    @MainActor
     private func schedulePermissionRefresh() {
         logger.debug("[PermissionManager] Scheduling permission status refresh...")
 
@@ -234,6 +241,7 @@ public class PermissionManager: ObservableObject {
         }
     }
 
+    @MainActor
     public func checkPermissions() async {
         logger.info("[PermissionManager] Checking permissions...")
 
@@ -256,6 +264,7 @@ public class PermissionManager: ObservableObject {
     }
 
     /// Check only accessibility permission (for periodic refresh)
+    @MainActor
     public func checkAccessibilityPermissionOnly() async {
         let previousStatus = accessibilityStatus
         let trusted = AXIsProcessTrusted()

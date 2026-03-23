@@ -5,10 +5,21 @@ import os
 import Speech
 import SwiftUI
 
+private final class EngineCoordinatorCallbackSink: @unchecked Sendable {
+    var onTranscriptionComplete: (@Sendable (String, TimeInterval) -> Void)?
+    var onStopRecording: (() async -> Void)?
+}
+
+enum RecordingStartupAttemptPolicy {
+    static func shouldMarkPending(recognizerAvailable: Bool, modelsReady: Bool) -> Bool {
+        recognizerAvailable && modelsReady
+    }
+}
+
 // MARK: - Speech Engine Coordinator
 
 /// Coordinates speech recognition engine lifecycle and manages recording state
-public class EngineCoordinatorViewModel: ObservableObject {
+public class EngineCoordinatorViewModel: ObservableObject, @unchecked Sendable {
     private let logger = Logger(subsystem: "com.flowstay.app", category: "EngineCoordinator")
 
     public enum PrewarmBehavior {
@@ -31,14 +42,19 @@ public class EngineCoordinatorViewModel: ObservableObject {
     private weak var appState: AppState?
     private var modelPreparationTask: Task<Void, Never>?
     private var recordingPipelinePrewarmTask: Task<Bool, Never>?
+    private let callbackSink = EngineCoordinatorCallbackSink()
 
-    // Callbacks
-    /// SAFETY: nonisolated(unsafe) because this callback is set once during initialization
-    /// and only invoked from MainActor-isolated code. The @Sendable closure ensures
-    /// the callback itself is safe to call from any context.
-    public nonisolated(unsafe) var onTranscriptionComplete: (@Sendable (String, TimeInterval) -> Void)?
-    private var stopCallback: (() async -> Void)?
+    public var onTranscriptionComplete: (@Sendable (String, TimeInterval) -> Void)? {
+        get { callbackSink.onTranscriptionComplete }
+        set { callbackSink.onTranscriptionComplete = newValue }
+    }
 
+    private var stopCallback: (() async -> Void)? {
+        get { callbackSink.onStopRecording }
+        set { callbackSink.onStopRecording = newValue }
+    }
+
+    @MainActor
     public init(appState: AppState? = nil) {
         self.appState = appState
         // Create FluidAudio instance synchronously to avoid race conditions
@@ -49,6 +65,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
         setupSubscriptions()
     }
 
+    @MainActor
     private func setupSubscriptions() {
         // Clear any existing subscriptions
         cancellables.removeAll()
@@ -88,7 +105,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
         fluidAudioSpeechRecognition?.onTranscriptionComplete = { [weak self] finalText, duration in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                onTranscriptionComplete?(finalText, duration)
+                callbackSink.onTranscriptionComplete?(finalText, duration)
             }
         }
 
@@ -96,12 +113,14 @@ public class EngineCoordinatorViewModel: ObservableObject {
     }
 
     /// Check if speech recognition models are downloaded (exist on disk)
+    @MainActor
     public func isModelDownloaded() -> Bool {
         fluidAudioSpeechRecognition?.areModelsCached() ?? false
     }
 
     /// Pre-initialize all models during app startup to avoid first-run delays.
     /// Uses fast-path loading if models are already cached, otherwise downloads.
+    @MainActor
     public func preInitializeAllModels(prewarmBehavior: PrewarmBehavior = .modelsAndAudio) async {
         if let modelPreparationTask {
             await modelPreparationTask.value
@@ -120,6 +139,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
         modelPreparationTask = nil
     }
 
+    @MainActor
     private func performModelPreparation(prewarmBehavior: PrewarmBehavior) async {
         guard let fluidAudio = fluidAudioSpeechRecognition else {
             engineError = "Speech recognition engine not initialized"
@@ -166,6 +186,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
     }
 
     @discardableResult
+    @MainActor
     public func prewarmRecordingPipelineIfNeeded() async -> Bool {
         guard isModelsReady else {
             return false
@@ -188,6 +209,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
         return didPrewarm
     }
 
+    @MainActor
     public func setCallbacks(
         onStartRecording: @escaping () async -> Void,
         onStopRecording: @escaping () async -> Void
@@ -196,9 +218,19 @@ public class EngineCoordinatorViewModel: ObservableObject {
         stopCallback = onStopRecording
     }
 
+    @MainActor
     public func startRecording() async throws {
         if isTransitioningRecordingState { return }
         if isRecording { return }
+
+        let recognizerAvailable = fluidAudioSpeechRecognition != nil
+        let modelsReady = fluidAudioSpeechRecognition?.isModelsReady == true
+        if RecordingStartupAttemptPolicy.shouldMarkPending(
+            recognizerAvailable: recognizerAvailable,
+            modelsReady: modelsReady
+        ) {
+            UserDefaults.standard.recordingStartupPending = true
+        }
 
         isTransitioningRecordingState = true
         defer { isTransitioningRecordingState = false }
@@ -209,7 +241,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
         }
 
         // Check if models are ready before attempting to record
-        if !fluidAudioSpeechRecognition.isModelsReady {
+        if !modelsReady {
             engineError = "Please download the speech recognition model first"
             throw NSError(domain: "EngineCoordinatorViewModel", code: 2, userInfo: [NSLocalizedDescriptionKey: "Speech recognition models not downloaded. Please complete onboarding first."])
         }
@@ -219,15 +251,23 @@ public class EngineCoordinatorViewModel: ObservableObject {
             isRecording = fluidAudioSpeechRecognition.isRecording
 
             // Play start cue only after recording is actually active.
-            if isRecording, appState?.soundFeedbackEnabled == true {
+            if isRecording,
+               appState?.soundFeedbackEnabled == true,
+               !UserDefaults.standard.recordingStartupRecoveryMode,
+               UserDefaults.standard.hasValidatedRecordingStartup
+            {
                 SoundManager.shared.playStartRecording()
             }
         } catch {
+            UserDefaults.standard.recordingStartupPending = false
             engineError = "Failed to start FluidAudio recognition: \(error.localizedDescription)"
             isRecording = false
 
             // Play error sound
-            if appState?.soundFeedbackEnabled == true {
+            if appState?.soundFeedbackEnabled == true,
+               !UserDefaults.standard.recordingStartupRecoveryMode,
+               UserDefaults.standard.hasValidatedRecordingStartup
+            {
                 SoundManager.shared.playError()
             }
             throw error
@@ -236,6 +276,7 @@ public class EngineCoordinatorViewModel: ObservableObject {
 
     /// Stop recording and finalize transcription
     /// Note: Audio finalization happens asynchronously - completion is signaled via onTranscriptionComplete callback
+    @MainActor
     public func stopRecording() async {
         if isTransitioningRecordingState { return }
         if !isRecording { return }
@@ -249,7 +290,10 @@ public class EngineCoordinatorViewModel: ObservableObject {
             isRecording = fluidAudioSpeechRecognition.isRecording
 
             // Play stop recording sound immediately for user feedback
-            if appState?.soundFeedbackEnabled == true {
+            if appState?.soundFeedbackEnabled == true,
+               !UserDefaults.standard.recordingStartupRecoveryMode,
+               UserDefaults.standard.hasValidatedRecordingStartup
+            {
                 SoundManager.shared.playStopRecording()
             }
         }
@@ -259,5 +303,6 @@ public class EngineCoordinatorViewModel: ObservableObject {
 
     /// FluidAudio is the only engine, so no switching needed
     /// This method is kept for compatibility but does nothing
+    @MainActor
     public func switchEngine(to _: SpeechEngineType) async {}
 }

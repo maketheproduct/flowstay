@@ -38,6 +38,7 @@ public struct StartupLaunchContext: Sendable {
     public let previousIncompleteStage: StartupStage?
 }
 
+@MainActor
 public final class StartupRecoveryManager {
     public static let shared = StartupRecoveryManager()
 

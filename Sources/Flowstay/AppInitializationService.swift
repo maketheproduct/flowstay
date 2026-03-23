@@ -26,6 +26,13 @@ enum OnboardingLaunchDecision {
     }
 }
 
+private final class AppInitializationCallbacks {
+    var onboarding: (() -> Void)?
+    var hotkeyEvent: ((HotkeyInputEvent) -> Void)?
+    var shortcutFeedback: ((HotkeyFeedbackEvent) -> Void)?
+    var hotkeyListenerReady: (() -> Void)?
+}
+
 /// Service responsible for handling app initialization tasks
 /// including onboarding flow and first-time setup
 @MainActor
@@ -33,10 +40,7 @@ class AppInitializationService: ObservableObject {
     private let permissionManager: PermissionManager
     private let appState: AppState
     private let engineCoordinator: EngineCoordinatorViewModel
-    private var onboardingCallback: (() -> Void)?
-    private var hotkeyEventCallback: ((HotkeyInputEvent) -> Void)?
-    private var shortcutFeedbackCallback: ((HotkeyFeedbackEvent) -> Void)?
-    private var hotkeyListenerReadyCallback: (() -> Void)?
+    private let callbacks = AppInitializationCallbacks()
     private var prewarmTask: Task<Void, Never>?
     private var deferredOnboardingResumeTask: Task<Void, Never>?
 
@@ -53,7 +57,7 @@ class AppInitializationService: ObservableObject {
         self.permissionManager = permissionManager
         self.appState = appState
         self.engineCoordinator = engineCoordinator
-        self.onboardingCallback = onboardingCallback
+        callbacks.onboarding = onboardingCallback
 
         // Re-check requirements when app becomes active
         notificationObserver = NotificationCenter.default.addObserver(
@@ -87,7 +91,7 @@ class AppInitializationService: ObservableObject {
 
     /// Set the onboarding callback after initialization
     func setOnboardingCallback(_ callback: @escaping () -> Void) {
-        onboardingCallback = callback
+        callbacks.onboarding = callback
     }
 
     func setShortcutHandlers(
@@ -95,9 +99,9 @@ class AppInitializationService: ObservableObject {
         onFeedback: @escaping (HotkeyFeedbackEvent) -> Void,
         onListenerReady: (() -> Void)? = nil
     ) {
-        hotkeyEventCallback = onHotkeyEvent
-        shortcutFeedbackCallback = onFeedback
-        hotkeyListenerReadyCallback = onListenerReady
+        callbacks.hotkeyEvent = onHotkeyEvent
+        callbacks.shortcutFeedback = onFeedback
+        callbacks.hotkeyListenerReady = onListenerReady
     }
 
     /// Check if critical requirements are met (permissions and model)
@@ -225,8 +229,8 @@ class AppInitializationService: ObservableObject {
             return
         }
 
-        guard let onHotkeyEvent = hotkeyEventCallback,
-              let onFeedback = shortcutFeedbackCallback
+        guard let onHotkeyEvent = callbacks.hotkeyEvent,
+              let onFeedback = callbacks.shortcutFeedback
         else {
             return
         }
@@ -242,7 +246,7 @@ class AppInitializationService: ObservableObject {
                 onHotkeyEvent: onHotkeyEvent,
                 onFeedback: onFeedback
             )
-            hotkeyListenerReadyCallback?()
+            callbacks.hotkeyListenerReady?()
         }
     }
 
@@ -282,7 +286,7 @@ class AppInitializationService: ObservableObject {
     private func showOnboardingWindow() async {
         // Use main actor to ensure UI updates happen on main thread
         await MainActor.run {
-            onboardingCallback?()
+            callbacks.onboarding?()
 
             // Direct approach: try to open window using NSApplication
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {

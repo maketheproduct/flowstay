@@ -300,10 +300,22 @@ public nonisolated struct AppRule: Identifiable, Codable, Sendable {
 
 import os
 
-public class AppState: ObservableObject {
+private final class AutomaticRepairRecorder {
+    private let handler: (RecoveryAutomaticRepair) -> Void
+
+    init(handler: @escaping (RecoveryAutomaticRepair) -> Void) {
+        self.handler = handler
+    }
+
+    func record(_ repair: RecoveryAutomaticRepair) {
+        handler(repair)
+    }
+}
+
+public class AppState: ObservableObject, @unchecked Sendable {
     private let logger = Logger(subsystem: "com.flowstay.core", category: "AppState")
     private let defaults: UserDefaults
-    private let recordAutomaticRepair: (RecoveryAutomaticRepair) -> Void
+    private let automaticRepairRecorder: AutomaticRepairRecorder
 
     @Published public var status: AppStatus = .idle
     @Published public var isRecording = false
@@ -494,12 +506,14 @@ public class AppState: ObservableObject {
         launchAtLoginStatusProvider: @escaping () throws -> Bool = {
             SMAppService.mainApp.status == .enabled
         },
-        recordAutomaticRepair: @escaping (RecoveryAutomaticRepair) -> Void = {
-            StartupRecoveryManager.shared.recordAutomaticRepair($0)
+        recordAutomaticRepair: @escaping (RecoveryAutomaticRepair) -> Void = { repair in
+            Task { @MainActor in
+                StartupRecoveryManager.shared.recordAutomaticRepair(repair)
+            }
         }
     ) {
         self.defaults = defaults
-        self.recordAutomaticRepair = recordAutomaticRepair
+        automaticRepairRecorder = AutomaticRepairRecorder(handler: recordAutomaticRepair)
 
         hasCompletedOnboarding = defaults.bool(forKey: "hasCompletedOnboarding")
         autoPasteEnabled = defaults.bool(forKey: "autoPasteEnabled")
@@ -531,7 +545,7 @@ public class AppState: ObservableObject {
             defaults.set(resolvedHotkeyPressMode.rawValue, forKey: "hotkeyPressMode")
             if let storedHotkeyPressMode {
                 logger.warning("[AppState] Normalized hotkeyPressMode from \(storedHotkeyPressMode) to \(resolvedHotkeyPressMode.rawValue)")
-                recordAutomaticRepair(
+                automaticRepairRecorder.record(
                     RecoveryAutomaticRepair(
                         key: "hotkeyPressMode",
                         title: "Normalized hotkey mode",
@@ -548,7 +562,7 @@ public class AppState: ObservableObject {
             defaults.set(resolvedHoldInputSource.rawValue, forKey: "holdToTalkInputSource")
             if let storedHoldInputSource {
                 logger.warning("[AppState] Normalized holdToTalkInputSource from \(storedHoldInputSource) to \(resolvedHoldInputSource.rawValue)")
-                recordAutomaticRepair(
+                automaticRepairRecorder.record(
                     RecoveryAutomaticRepair(
                         key: "holdToTalkInputSource",
                         title: "Normalized hold input",
@@ -567,7 +581,7 @@ public class AppState: ObservableObject {
             from: defaults,
             key: "userPersonas",
             logger: logger,
-            recordAutomaticRepair: recordAutomaticRepair
+            recordAutomaticRepair: automaticRepairRecorder.record
         ) {
             personas.append(contentsOf: userPersonas)
         }
@@ -583,7 +597,7 @@ public class AppState: ObservableObject {
             if let storedSelectedPersonaId {
                 logger.warning("[AppState] Clearing stale selectedPersonaId: \(storedSelectedPersonaId)")
                 defaults.removeObject(forKey: "selectedPersonaId")
-                recordAutomaticRepair(
+                automaticRepairRecorder.record(
                     RecoveryAutomaticRepair(
                         key: "selectedPersonaId",
                         title: "Cleared stale selected persona",
@@ -599,7 +613,7 @@ public class AppState: ObservableObject {
             from: defaults,
             key: "appRules",
             logger: logger,
-            recordAutomaticRepair: recordAutomaticRepair
+            recordAutomaticRepair: automaticRepairRecorder.record
         ) ?? []
 
         // Initialize AI provider settings

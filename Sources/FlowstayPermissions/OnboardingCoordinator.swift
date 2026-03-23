@@ -18,6 +18,11 @@ enum OnboardingTutorialMode: String {
     }
 }
 
+enum OnboardingViewCommand: Equatable {
+    case dismissAfterDeferral
+    case completeOnboarding
+}
+
 enum HotkeyTutorialStep: Int, CaseIterable {
     case toggleStartPrompt
     case toggleRecording
@@ -68,6 +73,41 @@ enum ToggleShortcutHandlingPolicy {
 }
 
 @MainActor
+final class OnboardingAccessibilityPromptHandler {
+    private let onWillPresent: (@MainActor () async -> Void)?
+    private let onDidComplete: (@MainActor (Bool) -> Void)?
+
+    private init(
+        onWillPresent: (@MainActor () async -> Void)?,
+        onDidComplete: (@MainActor (Bool) -> Void)?
+    ) {
+        self.onWillPresent = onWillPresent
+        self.onDidComplete = onDidComplete
+    }
+
+    static func make(
+        onWillPresent: (@MainActor () async -> Void)?,
+        onDidComplete: (@MainActor (Bool) -> Void)?
+    ) -> OnboardingAccessibilityPromptHandler? {
+        guard onWillPresent != nil || onDidComplete != nil else {
+            return nil
+        }
+        return OnboardingAccessibilityPromptHandler(
+            onWillPresent: onWillPresent,
+            onDidComplete: onDidComplete
+        )
+    }
+
+    func notifyWillPresent() async {
+        await onWillPresent?()
+    }
+
+    func notifyDidComplete(granted: Bool) {
+        onDidComplete?(granted)
+    }
+}
+
+@MainActor
 final class OnboardingCoordinator: ObservableObject {
     enum NavigationDirection {
         case forward
@@ -110,13 +150,13 @@ final class OnboardingCoordinator: ObservableObject {
 
     @Published var isRequestingAccessibility = false
     @Published var showAccessibilityFallbackHint = false
+    @Published private(set) var viewCommand: OnboardingViewCommand?
 
     let appState: AppState
 
     private let permissionManager: PermissionManager
     private let engineCoordinator: EngineCoordinatorViewModel
-    private let onAccessibilityPromptWillPresent: (@MainActor () async -> Void)?
-    private let onAccessibilityPromptDidComplete: (@MainActor (Bool) -> Void)?
+    private let accessibilityPromptHandler: OnboardingAccessibilityPromptHandler?
     private let hotkeyMonitor = OnboardingHotkeyMonitor()
     private let defaultToggleShortcut = KeyboardShortcuts.Shortcut(.space, modifiers: [.option])
 
@@ -145,14 +185,12 @@ final class OnboardingCoordinator: ObservableObject {
         permissionManager: PermissionManager,
         engineCoordinator: EngineCoordinatorViewModel,
         appState: AppState,
-        onAccessibilityPromptWillPresent: (@MainActor () async -> Void)? = nil,
-        onAccessibilityPromptDidComplete: (@MainActor (Bool) -> Void)? = nil
+        accessibilityPromptHandler: OnboardingAccessibilityPromptHandler? = nil
     ) {
         self.permissionManager = permissionManager
         self.engineCoordinator = engineCoordinator
         self.appState = appState
-        self.onAccessibilityPromptWillPresent = onAccessibilityPromptWillPresent
-        self.onAccessibilityPromptDidComplete = onAccessibilityPromptDidComplete
+        self.accessibilityPromptHandler = accessibilityPromptHandler
         microphoneStatus = permissionManager.microphoneStatus
         accessibilityStatus = permissionManager.accessibilityStatus
         modelReady = engineCoordinator.isModelsReady
@@ -440,9 +478,7 @@ final class OnboardingCoordinator: ObservableObject {
         isRequestingAccessibility = true
         showAccessibilityFallbackHint = true
         Task {
-            if let onAccessibilityPromptWillPresent {
-                await onAccessibilityPromptWillPresent()
-            }
+            await accessibilityPromptHandler?.notifyWillPresent()
 
             await permissionManager.requestAccessibilityPermission()
 
@@ -458,7 +494,9 @@ final class OnboardingCoordinator: ObservableObject {
                 isRequestingAccessibility = false
                 showAccessibilityFallbackHint = !permissionManager.hasAccessibilityPermission
                 applyAccessibilityAutoPastePolicy(isGranted: permissionManager.hasAccessibilityPermission)
-                onAccessibilityPromptDidComplete?(permissionManager.hasAccessibilityPermission)
+                accessibilityPromptHandler?.notifyDidComplete(
+                    granted: permissionManager.hasAccessibilityPermission
+                )
             }
         }
     }
@@ -466,9 +504,7 @@ final class OnboardingCoordinator: ObservableObject {
     func openAccessibilitySettings() {
         showAccessibilityFallbackHint = true
         Task {
-            if let onAccessibilityPromptWillPresent {
-                await onAccessibilityPromptWillPresent()
-            }
+            await accessibilityPromptHandler?.notifyWillPresent()
 
             permissionManager.openAccessibilitySettings()
         }
@@ -564,6 +600,7 @@ final class OnboardingCoordinator: ObservableObject {
         UserDefaults.standard.onboardingDeferredForModelDownload = true
         modelPreparationTask?.cancel()
         modelPreparationTask = nil
+        viewCommand = .dismissAfterDeferral
 
         Task {
             if !UserDefaults.standard.notificationPromptAttempted {
@@ -603,6 +640,16 @@ final class OnboardingCoordinator: ObservableObject {
 
             scheduleDeferredOnboardingReopen()
         }
+    }
+
+    func completeOnboarding() {
+        guard canCompleteOnboarding else { return }
+        UserDefaults.standard.hasCompletedOnboarding = true
+        viewCommand = .completeOnboarding
+    }
+
+    func clearViewCommand() {
+        viewCommand = nil
     }
 
     func dismissShortcutPicker() {

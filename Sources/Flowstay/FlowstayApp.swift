@@ -13,7 +13,7 @@ import SwiftUI
 
 /// App delegate that manages the status bar item, popover, and all windows
 /// This is the main controller for the entire app - no SwiftUI App struct is used
-class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverController {
+class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverController, @unchecked Sendable {
     // MARK: - Logging
 
     private let logger = Logger(subsystem: "com.flowstay.app", category: "AppDelegate")
@@ -21,6 +21,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     // MARK: - Status Bar
 
     private var statusItem: NSStatusItem!
+    private var statusItemActionBridge: StatusItemActionBridge?
     private var popover: NSPopover!
     private var cancellables = Set<AnyCancellable>()
 
@@ -62,7 +63,6 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private var firstHotkeyFeedbackAt: Date?
     private var firstRecordingStartAt: Date?
     private var hotkeyListenerReadyAt: Date?
-    private var lastPopoverGuidanceAt: Date?
 
     private struct PersonaProcessingOutcome {
         let processedText: String
@@ -70,11 +70,66 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         let overlayOutcomeSuccess: Bool
     }
 
+    /// Bridges AppKit's target-action callback into regular Swift code without
+    /// exposing an actor-sensitive selector on the app delegate itself.
+    private final class StatusItemActionBridge: NSObject {
+        weak var owner: FlowstayAppDelegate?
+
+        init(owner: FlowstayAppDelegate) {
+            self.owner = owner
+        }
+
+        @objc func handleClick(_ sender: Any?) {
+            _ = sender
+            owner?.handleStatusItemButtonActionFromBridge()
+        }
+    }
+
+    private nonisolated func scheduleOnMain(
+        _ action: @escaping @MainActor (FlowstayAppDelegate) -> Void
+    ) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            action(self)
+        }
+    }
+
     // MARK: - NSApplicationDelegate
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    nonisolated func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = notification
+
+        Task { @MainActor [weak self] in
+            self?.handleApplicationDidFinishLaunching()
+        }
+    }
+
+    nonisolated func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        _ = sender
+        return false
+    }
+
+    nonisolated func applicationDidBecomeActive(_ notification: Notification) {
+        _ = notification
+
+        Task { @MainActor [weak self] in
+            self?.restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(reason: "app-became-active")
+        }
+    }
+
+    nonisolated func applicationWillTerminate(_ notification: Notification) {
+        _ = notification
+
+        Task { @MainActor [weak self] in
+            self?.handleApplicationWillTerminate()
+        }
+    }
+
+    @MainActor
+    private func handleApplicationDidFinishLaunching() {
         logger.info("[AppDelegate] applicationDidFinishLaunching - initializing app")
         logStartupMetric("app launch", at: launchTimestamp)
+        activateRecordingStartupRecoveryIfNeeded()
         let buildVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String
         let shortVersion = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
         let startupContext = StartupRecoveryManager.shared.beginLaunch(version: shortVersion, build: buildVersion)
@@ -148,16 +203,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
-    }
-
-    func applicationDidBecomeActive(_ notification: Notification) {
-        _ = notification
-        restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(reason: "app-became-active")
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
+    @MainActor
+    private func handleApplicationWillTerminate() {
         logger.info("[AppDelegate] applicationWillTerminate - cleaning up")
         overlayProcessingTimeoutTask?.cancel()
         overlayProcessingTimeoutTask = nil
@@ -165,14 +212,30 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         hotkeyWarmupTask = nil
         hotkeyStartupFeedbackTask?.cancel()
         hotkeyStartupFeedbackTask = nil
+        if let button = statusItem?.button {
+            button.target = nil
+            button.action = nil
+        }
+        statusItemActionBridge = nil
         if let statusItem {
             NSStatusBar.system.removeStatusItem(statusItem)
         }
         cancellables.removeAll()
+
+        // Clear window delegates to prevent zombie callbacks during teardown
+        onboardingWindow?.delegate = nil
+        onboardingWindow = nil
+        onboardingWindowDelegate = nil
+        recoveryWindow?.delegate = nil
+        recoveryWindow = nil
+        recoveryWindowDelegate = nil
+        settingsWindow = nil
+        overlayWindowController = nil
     }
 
     // MARK: - State Initialization
 
+    @MainActor
     private func initializeState() {
         logger.info("[AppDelegate] Initializing state objects...")
 
@@ -181,7 +244,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         GlobalShortcutsManager.setHoldInputSource(appState.holdToTalkInputSource)
         engineCoordinator = EngineCoordinatorViewModel(appState: appState)
         personasEngine = PersonasEngine()
-        overlayWindowController = OverlayWindowController(engineCoordinator: engineCoordinator)
+        overlayWindowController = nil
 
         initService = AppInitializationService(
             permissionManager: permissionManager,
@@ -193,6 +256,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         logger.info("[AppDelegate] ✅ State objects initialized")
     }
 
+    @MainActor
     private func setupTranscriptionCallback() {
         engineCoordinator.onTranscriptionComplete = { [weak self] finalText, duration in
             guard let self else { return }
@@ -203,7 +267,10 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func handleTranscriptionCompletion(finalText: String, duration: TimeInterval) async {
+        let recordingStartupSafeModeWasActive = recordingStartupSafeModeActive
+
         // The callback fired — cancel the safety timeout immediately.
         // The overlay stays on .processing (isAwaitingTranscriptionCompletion remains true)
         // until we finish and call consumeAwaitingOverlayCompletion() at the end.
@@ -256,13 +323,16 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         await performAutoPasteIfNeeded(
             processedText: personaOutcome.processedText,
             appState: appState,
-            permissionManager: permissionManager
+            permissionManager: permissionManager,
+            recordingStartupSafeModeWasActive: recordingStartupSafeModeWasActive
         )
 
         // Play completion sound AFTER paste (or if no paste, after processing)
-        if appState.soundFeedbackEnabled {
+        if appState.soundFeedbackEnabled, !recordingStartupSafeModeWasActive {
             SoundManager.shared.playTranscriptionComplete()
         }
+
+        markRecordingStartupValidated(reason: "transcription-complete")
 
         if consumeAwaitingOverlayCompletion() {
             stageOverlayOutcome(success: personaOutcome.overlayOutcomeSuccess)
@@ -270,11 +340,13 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func resolveFinalTranscriptionOrHandleNoSpeech(_ finalText: String) -> String? {
         switch FinalTranscriptionPolicy.classify(finalText) {
         case .noSpeech:
             logger.warning("[AppDelegate] No transcription detected (trimmed empty). Showing overlay error state")
             recordingTargetApp = nil
+            markRecordingStartupValidated(reason: "transcription-empty-no-speech")
             if consumeAwaitingOverlayCompletion() {
                 stageOverlayOutcome(success: false)
                 applyOverlayVisibility(reason: "transcription-empty-no-speech")
@@ -288,6 +360,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func processPersonaIfNeeded(
         finalTranscription: String,
         appState: AppState,
@@ -361,6 +434,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         )
     }
 
+    @MainActor
     private func persistTranscription(
         finalTranscription: String,
         processedText: String,
@@ -392,11 +466,15 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         await TranscriptionHistoryStore.shared.addIgnoringErrors(record)
     }
 
+    @MainActor
     private func performAutoPasteIfNeeded(
         processedText: String,
         appState: AppState,
-        permissionManager: PermissionManager
+        permissionManager: PermissionManager,
+        recordingStartupSafeModeWasActive: Bool
     ) async {
+        guard !recordingStartupSafeModeWasActive else { return }
+
         if appState.autoPasteEnabled, permissionManager.hasAccessibilityPermission {
             logger.info("[AppDelegate] Auto-pasting transcript...")
             await TextPaster.pasteText(processedText)
@@ -407,15 +485,18 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
     // MARK: - Status Item Setup
 
+    @MainActor
     private func setupStatusItem() {
         logger.info("[AppDelegate] Setting up status item...")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItemActionBridge = StatusItemActionBridge(owner: self)
 
         if let button = statusItem.button {
             updateStatusIcon(isRecording: false)
-            button.action = #selector(togglePopover)
-            button.target = self
+            button.action = #selector(StatusItemActionBridge.handleClick(_:))
+            button.target = statusItemActionBridge
+            button.sendAction(on: [.leftMouseUp])
 
             // Pre-warm button window for first-show positioning
             // NSStatusItem.button.window may not be initialized immediately after creation
@@ -439,6 +520,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         logger.info("[AppDelegate] ✅ Status item and popover configured with MenuBarView")
     }
 
+    @MainActor
     private func makeMenuBarRootView() -> MenuBarView {
         MenuBarView(
             appState: appState,
@@ -447,6 +529,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         )
     }
 
+    @MainActor
     private func installPopoverContent(size: CGSize, appearance: NSAppearance?) {
         let hostingController = NSHostingController(rootView: makeMenuBarRootView())
         hostingController.view.frame = NSRect(x: 0, y: 0, width: size.width, height: size.height)
@@ -457,6 +540,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         popover.contentViewController = hostingController
     }
 
+    @MainActor
     private func setupRecordingObserver() {
         engineCoordinator.$isRecording
             .receive(on: DispatchQueue.main)
@@ -464,17 +548,24 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 guard let self else { return }
 
                 if isRecording {
-                    if firstRecordingStartAt == nil {
-                        let now = Date()
-                        firstRecordingStartAt = now
-                        logStartupMetric("first recording start", at: now)
-                    }
-                    AppDetectionService.shared.detectFrontmostApp()
-                    recordingTargetApp = AppDetectionService.shared.currentApp
-                    if let app = recordingTargetApp {
-                        logger.info("[AppDelegate] Captured recording target app: \(app.name) (\(app.bundleId))")
+                if firstRecordingStartAt == nil {
+                    let now = Date()
+                    firstRecordingStartAt = now
+                    logStartupMetric("first recording start", at: now)
+                }
+                    if recordingStartupSafeModeActive {
+                        logger.info("[AppDelegate] Recording startup safe mode active; skipping start side effects")
                     } else {
-                        logger.info("[AppDelegate] Recording started with no detected target app")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                            guard let self, self.engineCoordinator.isRecording else { return }
+                            AppDetectionService.shared.detectFrontmostApp()
+                            self.recordingTargetApp = AppDetectionService.shared.currentApp
+                            if let app = self.recordingTargetApp {
+                                self.logger.info("[AppDelegate] Captured recording target app: \(app.name) (\(app.bundleId))")
+                            } else {
+                                self.logger.info("[AppDelegate] Recording started with no detected target app")
+                            }
+                        }
                     }
 
                     if stopHoldToTalkAfterTransition, !isHoldToTalkHotkeyPressed {
@@ -503,6 +594,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             .store(in: &cancellables)
     }
 
+    @MainActor
     private func setupModelReadinessObserver() {
         engineCoordinator.$isModelsReady
             .receive(on: DispatchQueue.main)
@@ -519,6 +611,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             .store(in: &cancellables)
     }
 
+    @MainActor
     private func setupOverlayObserver() {
         applyOverlayVisibility(reason: "overlay-observer-setup")
 
@@ -530,6 +623,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             .store(in: &cancellables)
     }
 
+    @MainActor
     private func setupHoldInputSourceObserver() {
         appState.$holdToTalkInputSource
             .removeDuplicates()
@@ -540,6 +634,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
             .store(in: &cancellables)
     }
 
+    @MainActor
     private func applyOverlayVisibility(reason: String) {
         let now = Date()
         let nextPhase = OverlayVisibilityPolicy.resolve(
@@ -579,22 +674,22 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
         case .recording:
             clearOverlayOutcome()
-            overlayWindowController?.showRecording(on: currentOverlayScreen())
+            ensureOverlayWindowController().showRecording(on: currentOverlayScreen())
 
         case .warming:
             clearOverlayOutcome()
-            overlayWindowController?.showWarmup(on: currentOverlayScreen())
+            ensureOverlayWindowController().showWarmup(on: currentOverlayScreen())
 
         case .processing:
             clearOverlayOutcome()
-            overlayWindowController?.showProcessing(on: currentOverlayScreen())
+            ensureOverlayWindowController().showProcessing(on: currentOverlayScreen())
             if overlayProcessingTimeoutTask == nil {
                 startOverlayProcessingTimeout()
             }
 
         case .outcomeSuccess, .outcomeError:
             if nextPhase != previousPhase {
-                overlayWindowController?.showOutcome(
+                ensureOverlayWindowController().showOutcome(
                     success: nextPhase == .outcomeSuccess,
                     on: currentOverlayScreen()
                 )
@@ -602,18 +697,34 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
+    private func ensureOverlayWindowController() -> OverlayWindowController {
+        if let overlayWindowController {
+            return overlayWindowController
+        }
+
+        let controller = OverlayWindowController(engineCoordinator: engineCoordinator)
+        overlayWindowController = controller
+        return controller
+    }
+
+    @MainActor
     private func clearOverlayOutcome() {
         overlayOutcomeVisibleUntil = nil
         overlayOutcomeState = nil
     }
 
+    @MainActor
     private func stageOverlayOutcome(success: Bool) {
         overlayOutcomeVisibleUntil = Date().addingTimeInterval(1.1)
         overlayOutcomeState = success ? .success : .error
     }
 
+    @MainActor
     private var overlayIsEnabled: Bool {
-        OverlayEnablementPolicy.resolve(
+        guard !recordingStartupSafeModeActive else { return false }
+
+        return OverlayEnablementPolicy.resolve(
             OverlayEnablementInput(
                 userPreferenceEnabled: UserDefaults.standard.object(forKey: "showOverlay") as? Bool ?? true,
                 onboardingVisible: onboardingWindow?.isVisible ?? false,
@@ -622,6 +733,35 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         )
     }
 
+    private var recordingStartupSafeModeActive: Bool {
+        UserDefaults.standard.recordingStartupRecoveryMode || !UserDefaults.standard.hasValidatedRecordingStartup
+    }
+
+    @MainActor
+    private func activateRecordingStartupRecoveryIfNeeded() {
+        guard UserDefaults.standard.recordingStartupPending else { return }
+        UserDefaults.standard.recordingStartupPending = false
+        UserDefaults.standard.recordingStartupRecoveryMode = true
+        logger.warning("[AppDelegate] Previous launch ended during recording startup; enabling startup safe mode")
+    }
+
+    @MainActor
+    private func markRecordingStartupValidated(reason: String) {
+        let defaults = UserDefaults.standard
+        let hadPending = defaults.recordingStartupPending
+        let hadRecoveryMode = defaults.recordingStartupRecoveryMode
+        let hadValidated = defaults.hasValidatedRecordingStartup
+
+        defaults.recordingStartupPending = false
+        defaults.recordingStartupRecoveryMode = false
+        defaults.hasValidatedRecordingStartup = true
+
+        if hadPending || hadRecoveryMode || !hadValidated {
+            logger.info("[AppDelegate] Recording startup validated (\(reason, privacy: .public))")
+        }
+    }
+
+    @MainActor
     private func currentOverlayScreen() -> NSScreen? {
         if onboardingOverlayMode == .followRuntime,
            onboardingWindow?.isVisible == true,
@@ -633,12 +773,14 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         return statusItem?.button?.window?.screen ?? NSScreen.main
     }
 
+    @MainActor
     private func setOnboardingOverlayMode(_ mode: OnboardingOverlayMode, reason: String) {
         guard onboardingOverlayMode != mode else { return }
         onboardingOverlayMode = mode
         applyOverlayVisibility(reason: reason)
     }
 
+    @MainActor
     private func handleOverlayRecordingTransition(isRecording: Bool) {
         let wasRecording = previousRecordingState
 
@@ -662,6 +804,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         applyOverlayVisibility(reason: "recording-stopped-awaiting-transcription")
     }
 
+    @MainActor
     private func startOverlayProcessingTimeout() {
         cancelOverlayProcessingTimeout()
         overlayProcessingTimeoutTask = Task { [weak self] in
@@ -687,11 +830,13 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func cancelOverlayProcessingTimeout() {
         overlayProcessingTimeoutTask?.cancel()
         overlayProcessingTimeoutTask = nil
     }
 
+    @MainActor
     private func consumeAwaitingOverlayCompletion() -> Bool {
         let shouldShowOutcome = isAwaitingTranscriptionCompletion
         isAwaitingTranscriptionCompletion = false
@@ -699,6 +844,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         return shouldShowOutcome
     }
 
+    @MainActor
     private func handleHotkeyToggleRequested() {
         let decision = HotkeyStartPolicy.onToggle(
             HotkeyStartInput(
@@ -714,6 +860,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         applyHotkeyDecision(decision)
     }
 
+    @MainActor
     private func handleHotkeyEvent(_ event: HotkeyInputEvent) {
         switch appState.hotkeyPressMode {
         case .toggle:
@@ -734,6 +881,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func handleHoldToTalkEvent(_ event: HotkeyInputEvent) {
         switch event {
         case .functionKeyDown:
@@ -761,6 +909,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func stopHoldToTalkSessionIfNeeded() {
         guard holdToTalkSessionActive else { return }
 
@@ -790,12 +939,14 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         )
     }
 
+    @MainActor
     private func resetHoldToTalkState() {
         isHoldToTalkHotkeyPressed = false
         holdToTalkSessionActive = false
         stopHoldToTalkAfterTransition = false
     }
 
+    @MainActor
     private func applyHotkeyDecision(_ decision: HotkeyStartDecision) {
         let shouldMaintainPendingWarmup = isHotkeyStartPending
             || decision.actions.contains(.queueWarmup)
@@ -856,6 +1007,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func startHotkeyWarmupTimeout() {
         hotkeyWarmupTask?.cancel()
         hotkeyWarmupTask = Task { @MainActor [weak self] in
@@ -871,6 +1023,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func setQueuedStartRequest(_ queued: Bool) {
         guard queuedStartRequest != queued else { return }
         queuedStartRequest = queued
@@ -883,12 +1036,14 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         applyOverlayVisibility(reason: "queued-start-updated")
     }
 
+    @MainActor
     private func setHotkeyStartPending(_ pending: Bool) {
         guard isHotkeyStartPending != pending else { return }
         isHotkeyStartPending = pending
         applyOverlayVisibility(reason: "hotkey-pending-updated")
     }
 
+    @MainActor
     private func registerHotkeyKeydownIfNeeded() {
         if firstHotkeyKeydownAt == nil {
             let now = Date()
@@ -905,6 +1060,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func handleHotkeyFeedback(_ event: HotkeyFeedbackEvent) {
         let now = Date()
         if event == .accepted {
@@ -954,6 +1110,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         showHotkeyVisualFeedback(event)
     }
 
+    @MainActor
     private func showHotkeyVisualFeedback(_ event: HotkeyFeedbackEvent) {
         switch event {
         case .queued:
@@ -983,6 +1140,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func flashStatusItemAcknowledgement() {
         hotkeyStartupFeedbackTask?.cancel()
         guard let button = statusItem?.button else { return }
@@ -1010,6 +1168,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         }
     }
 
+    @MainActor
     private func recordHotkeyListenerReady() {
         guard hotkeyListenerReadyAt == nil else { return }
         let now = Date()
@@ -1017,11 +1176,13 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         logStartupMetric("hotkey listener ready", at: now)
     }
 
+    @MainActor
     private func logStartupMetric(_ label: String, at timestamp: Date) {
         let delta = timestamp.timeIntervalSince(launchTimestamp)
         logger.info("[StartupTelemetry] \(label, privacy: .public) +\(delta, format: .fixed(precision: 3))s")
     }
 
+    @MainActor
     private func updateStatusIcon(isRecording: Bool) {
         guard let button = statusItem?.button else { return }
 
@@ -1035,6 +1196,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
     // MARK: - URL Handling (OAuth Callbacks)
 
+    @MainActor
     private func registerForURLEvents() {
         NSAppleEventManager.shared().setEventHandler(
             self,
@@ -1054,10 +1216,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         guard let urlString = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
               let url = URL(string: urlString)
         else {
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    self.logger.info("[AppDelegate] Invalid URL event received")
-                }
+            scheduleOnMain { delegate in
+                delegate.logger.info("[AppDelegate] Invalid URL event received")
             }
             return
         }
@@ -1066,10 +1226,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         let host = url.host ?? ""
         let path = url.path
 
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                self.logger.info("[AppDelegate] URL event received: \(scheme)://\(host)\(path)")
-            }
+        scheduleOnMain { delegate in
+            delegate.logger.info("[AppDelegate] URL event received: \(scheme)://\(host)\(path)")
         }
 
         // Note: OpenRouter OAuth now uses localhost:3000 callback server instead of URL scheme
@@ -1080,79 +1238,66 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 // MARK: - Popover Control
 
 extension FlowstayAppDelegate {
-    /// `nonisolated` so the Objective-C runtime can call the selector without
-    /// triggering a `_checkExpectedExecutor` crash when it dispatches from a
-    /// non-main thread.  We bounce back to the main thread explicitly.
-    @objc nonisolated func togglePopover() {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                guard self.popover != nil else { return }
-                if self.popover.isShown {
-                    self.closePopover()
-                } else {
-                    self.showPopover()
-                }
-            }
+    private nonisolated func handleStatusItemButtonActionFromBridge() {
+        scheduleOnMain { delegate in
+            delegate.togglePopoverOnMain()
+        }
+    }
+
+    @MainActor
+    private func togglePopoverOnMain() {
+        guard popover != nil else { return }
+
+        if popover.isShown {
+            closePopoverDirect()
+        } else {
+            showPopoverDirect(retryCount: 0)
         }
     }
 
     func showPopover() {
-        showPopover(retryCount: 0, forceOnFailure: false)
+        Task { @MainActor [weak self] in
+            self?.showPopoverDirect(retryCount: 0)
+        }
     }
 
-    func showPopover(retryCount: Int, forceOnFailure: Bool) {
+    @MainActor
+    private func showPopoverDirect(retryCount: Int) {
         guard let button = statusItem?.button else { return }
 
         guard button.window != nil else {
-            guard retryCount < 3 else {
-                if forceOnFailure {
-                    forceShowPopover(button: button, reason: "status-button-window-unavailable")
-                } else {
-                    showMenuBarClickGuidance(reason: "status-button-window-unavailable")
-                }
-                return
-            }
+            guard retryCount < 3 else { return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-                self?.showPopover(retryCount: retryCount + 1, forceOnFailure: forceOnFailure)
+                Task { @MainActor [weak self] in
+                    self?.showPopoverDirect(retryCount: retryCount + 1)
+                }
             }
             return
         }
-
-        appState.objectWillChange.send()
-        engineCoordinator.objectWillChange.send()
 
         let popoverSize = preferredPopoverSize()
         let appearance = button.window?.effectiveAppearance ?? button.effectiveAppearance
         installPopoverContent(size: popoverSize, appearance: appearance)
         popover.contentViewController?.view.layoutSubtreeIfNeeded()
-
-        NSApp.activate(ignoringOtherApps: true)
-
-        let anchorResolution = MenuBarPopoverAnchorPolicy.resolve(button: button)
-        if anchorResolution.isValid {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            return
-        }
-
-        guard retryCount < 3 else {
-            if forceOnFailure {
-                forceShowPopover(button: button, reason: anchorResolution.reason)
-            } else {
-                showMenuBarClickGuidance(reason: anchorResolution.reason)
-            }
-            return
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-            self?.showPopover(retryCount: retryCount + 1, forceOnFailure: forceOnFailure)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        if !popover.isShown {
+            logger.warning("[AppDelegate] Popover show requested but popover remained hidden")
         }
     }
 
     func closePopover() {
+        Task { @MainActor [weak self] in
+            self?.closePopoverDirect()
+        }
+    }
+
+    @MainActor
+    private func closePopoverDirect() {
         popover.performClose(nil)
     }
 
-    func preferredPopoverSize() -> CGSize {
+    @MainActor
+    private func preferredPopoverSize() -> CGSize {
         MenuBarView.preferredPopoverSize(
             criticalPermissionsGranted: permissionManager.criticalPermissionsGranted,
             onboardingComplete: UserDefaults.standard.hasCompletedOnboarding,
@@ -1162,35 +1307,14 @@ extension FlowstayAppDelegate {
         )
     }
 
-    func showMenuBarClickGuidance(reason: String) {
-        let now = Date()
-        if let lastPopoverGuidanceAt, now.timeIntervalSince(lastPopoverGuidanceAt) < 5 {
-            return
-        }
-        lastPopoverGuidanceAt = now
-
-        logger.warning(
-            "[AppDelegate] Popover anchor invalid after retries (reason: \(reason, privacy: .public))"
-        )
-
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "Flowstay is ready"
-        alert.informativeText = "Click the Flowstay icon in the menu bar to open the panel."
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
-    func forceShowPopover(button: NSStatusBarButton, reason: String) {
-        logger.warning(
-            "[AppDelegate] Forcing popover presentation (reason: \(reason, privacy: .public))"
-        )
-        NSApp.activate(ignoringOtherApps: true)
-        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-    }
-
     func toggleTranscriptionFromMenuBar() {
+        scheduleOnMain { delegate in
+            delegate.toggleTranscriptionFromMenuBarOnMain()
+        }
+    }
+
+    @MainActor
+    private func toggleTranscriptionFromMenuBarOnMain() {
         resetHoldToTalkState()
         if HotkeyStartPolicy.shouldShowStartPendingOnAccepted(
             isRecording: engineCoordinator.isRecording,
@@ -1208,11 +1332,20 @@ extension FlowstayAppDelegate {
 // MARK: - Settings & Recovery Windows
 
 extension FlowstayAppDelegate {
-    func openSettingsWindow() {
+    nonisolated func openSettingsWindow() {
+        scheduleOnMain { delegate in
+            delegate.openSettingsWindowOnMain()
+        }
+    }
+
+    @MainActor
+    private func openSettingsWindowOnMain() {
         if popover.isShown {
-            closePopover()
+            closePopoverDirect()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
-                self?.presentSettingsWindow()
+                self?.scheduleOnMain { delegate in
+                    delegate.presentSettingsWindow()
+                }
             }
             return
         }
@@ -1220,6 +1353,7 @@ extension FlowstayAppDelegate {
         presentSettingsWindow()
     }
 
+    @MainActor
     private func presentSettingsWindow() {
         if let existingWindow = settingsWindow, existingWindow.isVisible {
             NSApp.activate(ignoringOtherApps: true)
@@ -1253,12 +1387,15 @@ extension FlowstayAppDelegate {
         logger.info("[AppDelegate] Settings window opened")
     }
 
-    func openRecoveryWindow() {
-        openRecoveryWindow(autoPresented: false)
+    nonisolated func openRecoveryWindow() {
+        scheduleOnMain { delegate in
+            delegate.openRecoveryWindow(autoPresented: false)
+        }
     }
 
+    @MainActor
     func openRecoveryWindow(autoPresented: Bool) {
-        closePopover()
+        closePopoverDirect()
 
         if let existingWindow = recoveryWindow, existingWindow.isVisible {
             NSApp.activate(ignoringOtherApps: true)
@@ -1271,7 +1408,9 @@ extension FlowstayAppDelegate {
             appState: appState,
             autoPresented: autoPresented,
             onContinue: { [weak self] in
-                self?.recoveryWindow?.close()
+                DispatchQueue.main.async {
+                    self?.recoveryWindow?.close()
+                }
             }
         )
 
@@ -1302,8 +1441,15 @@ extension FlowstayAppDelegate {
 // MARK: - Onboarding Window
 
 extension FlowstayAppDelegate {
-    func openOnboardingWindow() {
-        closePopover()
+    nonisolated func openOnboardingWindow() {
+        scheduleOnMain { delegate in
+            delegate.openOnboardingWindowOnMain()
+        }
+    }
+
+    @MainActor
+    private func openOnboardingWindowOnMain() {
+        closePopoverDirect()
 
         if let existingWindow = onboardingWindow, existingWindow.isVisible {
             NSApp.activate(ignoringOtherApps: true)
@@ -1323,8 +1469,14 @@ extension FlowstayAppDelegate {
                 guard let self else { return }
                 logger.info("[AppDelegate] Onboarding completed - finalizing initialization")
                 Task { @MainActor in
+                    UserDefaults.standard.hasCompletedOnboarding = true
                     await self.initService.finalizeInitialization()
                     self.onboardingWindow?.close()
+                    self.onboardingWindow = nil
+                    self.onboardingWindowDelegate = nil
+                    self.clearOnboardingAccessibilityPromptState()
+                    self.setOnboardingOverlayMode(.suppressed, reason: "onboarding-complete")
+                    self.applyOverlayVisibility(reason: "onboarding-complete")
                     await self.presentPrimarySurfaceAfterOnboardingCompletion()
                 }
             },
@@ -1361,11 +1513,16 @@ extension FlowstayAppDelegate {
             engineCoordinator: engineCoordinator,
             onWindowWillClose: { [weak self] in
                 guard let self else { return }
-                onboardingWindow = nil
-                onboardingWindowDelegate = nil
-                clearOnboardingAccessibilityPromptState()
-                setOnboardingOverlayMode(.suppressed, reason: "onboarding-window-closed")
-                applyOverlayVisibility(reason: "onboarding-window-closed")
+                Task { @MainActor in
+                    if UserDefaults.standard.hasCompletedOnboarding {
+                        await self.initService.finalizeInitialization()
+                    }
+                    self.onboardingWindow = nil
+                    self.onboardingWindowDelegate = nil
+                    self.clearOnboardingAccessibilityPromptState()
+                    self.setOnboardingOverlayMode(.suppressed, reason: "onboarding-window-closed")
+                    self.applyOverlayVisibility(reason: "onboarding-window-closed")
+                }
             }
         )
         onboardingWindowDelegate = delegate
@@ -1382,12 +1539,14 @@ extension FlowstayAppDelegate {
         logger.info("[AppDelegate] Onboarding window opened")
     }
 
+    @MainActor
     func presentPrimarySurfaceAfterOnboardingCompletion() async {
         await Task.yield()
         try? await Task.sleep(for: .milliseconds(120))
-        showPopover(retryCount: 0, forceOnFailure: true)
+        showPopoverDirect(retryCount: 0)
     }
 
+    @MainActor
     func refreshWindowContentAfterPresentation(_ window: NSWindow) {
         DispatchQueue.main.async {
             window.contentView?.needsLayout = true
@@ -1396,6 +1555,7 @@ extension FlowstayAppDelegate {
         }
     }
 
+    @MainActor
     func prepareOnboardingWindowForAccessibilityPrompt() async {
         guard let onboardingWindow, onboardingWindow.isVisible else { return }
 
@@ -1412,6 +1572,7 @@ extension FlowstayAppDelegate {
         try? await Task.sleep(for: .milliseconds(180))
     }
 
+    @MainActor
     func restoreOnboardingWindowAfterAccessibilityPromptIfNeeded(reason: String) {
         guard shouldRestoreOnboardingWindowAfterAccessibilityPrompt else { return }
 
@@ -1432,57 +1593,10 @@ extension FlowstayAppDelegate {
         clearOnboardingAccessibilityPromptState()
     }
 
+    @MainActor
     func clearOnboardingAccessibilityPromptState() {
         shouldRestoreOnboardingWindowAfterAccessibilityPrompt = false
         onboardingWindowLevelBeforeAccessibilityPrompt = nil
-    }
-}
-
-private enum MenuBarPopoverAnchorPolicy {
-    struct Resolution {
-        let isValid: Bool
-        let reason: String
-    }
-
-    static func resolve(button: NSStatusBarButton) -> Resolution {
-        guard let window = button.window else {
-            return Resolution(isValid: false, reason: "status-button-window-missing")
-        }
-
-        let frameInWindow = button.convert(button.bounds, to: nil)
-        let frameInScreen = window.convertToScreen(frameInWindow)
-        let screen = window.screen ?? NSScreen.main
-
-        guard frameInScreen.hasFiniteValues else {
-            return Resolution(isValid: false, reason: "anchor-frame-nonfinite")
-        }
-
-        guard frameInScreen.width > 2, frameInScreen.height > 2 else {
-            return Resolution(isValid: false, reason: "anchor-frame-too-small")
-        }
-
-        guard let screen else {
-            return Resolution(isValid: false, reason: "anchor-screen-missing")
-        }
-
-        let midpoint = NSPoint(x: frameInScreen.midX, y: frameInScreen.midY)
-        guard screen.frame.contains(midpoint) else {
-            return Resolution(isValid: false, reason: "anchor-outside-screen")
-        }
-
-        // Menu bar extras are on the right side. Frames resolving on the left
-        // half are usually stale/invalid status-item geometry.
-        guard frameInScreen.midX >= screen.frame.midX else {
-            return Resolution(isValid: false, reason: "anchor-left-half")
-        }
-
-        return Resolution(isValid: true, reason: "ok")
-    }
-}
-
-private extension NSRect {
-    var hasFiniteValues: Bool {
-        origin.x.isFinite && origin.y.isFinite && size.width.isFinite && size.height.isFinite
     }
 }
 
@@ -1510,7 +1624,7 @@ private final class OnboardingPanel: NSPanel {
     }
 }
 
-private final class OnboardingWindowDelegate: NSObject, NSWindowDelegate {
+private final class OnboardingWindowDelegate: NSObject, NSWindowDelegate, @unchecked Sendable {
     private weak var permissionManager: PermissionManager?
     private weak var engineCoordinator: EngineCoordinatorViewModel?
     private let onWindowWillClose: (() -> Void)?
@@ -1567,7 +1681,7 @@ private final class OnboardingWindowDelegate: NSObject, NSWindowDelegate {
     }
 }
 
-private final class RecoveryWindowDelegate: NSObject, NSWindowDelegate {
+private final class RecoveryWindowDelegate: NSObject, NSWindowDelegate, @unchecked Sendable {
     private let onWindowWillClose: (() -> Void)?
 
     init(onWindowWillClose: (() -> Void)? = nil) {

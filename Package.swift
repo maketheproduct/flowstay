@@ -42,7 +42,6 @@ let package = Package(
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
-                .defaultIsolation(MainActor.self),
             ]
         ),
 
@@ -57,7 +56,6 @@ let package = Package(
             path: "Sources/FlowstayCore",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
-                .defaultIsolation(MainActor.self),
             ]
         ),
 
@@ -76,7 +74,6 @@ let package = Package(
             ],
             swiftSettings: [
                 .swiftLanguageMode(.v6),
-                .defaultIsolation(MainActor.self),
             ]
         ),
 
@@ -90,7 +87,6 @@ let package = Package(
             path: "Sources/FlowstayPermissions",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
-                .defaultIsolation(MainActor.self),
             ]
         ),
 

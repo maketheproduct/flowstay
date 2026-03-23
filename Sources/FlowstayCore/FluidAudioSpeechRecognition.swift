@@ -1,19 +1,41 @@
 @preconcurrency import AVFoundation
 import Combine
+import CoreAudio
 import FluidAudio
 import Foundation
 import os
 import UserNotifications
+
+private final class TranscriptionCompletionSink {
+    var handler: (@Sendable (String, TimeInterval) -> Void)?
+}
 
 /// Errors that can occur during FluidAudio speech recognition
 public enum FluidAudioError: Error {
     case microphoneSetupFailed
     case modelsNotLoaded
     case transcriptionFailed
+    case noInputDeviceAvailable
+}
+
+extension FluidAudioError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .microphoneSetupFailed:
+            "Failed to configure the microphone input."
+        case .modelsNotLoaded:
+            "Speech recognition models are not loaded."
+        case .transcriptionFailed:
+            "Speech transcription failed."
+        case .noInputDeviceAvailable:
+            "No audio input device is available. Connect a microphone or choose an input device in System Settings."
+        }
+    }
 }
 
 /// FluidAudio-based Speech Recognition using Parakeet TDT ASR
 /// Provides fast, accurate, local speech recognition with better real-time performance than Whisper
+@MainActor
 public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     private struct StopFinalizationDiagnostics {
         let stopRequestedAt: Date
@@ -26,9 +48,13 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     @Published public var transcription = ""
     @Published public var audioLevel: Float = 0.0
     @Published public var waveformSamples: [Float] = []
+    private let transcriptionCompletionSink = TranscriptionCompletionSink()
 
     /// Callback when transcription is complete (with duration)
-    public var onTranscriptionComplete: (@Sendable (String, TimeInterval) -> Void)?
+    public var onTranscriptionComplete: (@Sendable (String, TimeInterval) -> Void)? {
+        get { transcriptionCompletionSink.handler }
+        set { transcriptionCompletionSink.handler = newValue }
+    }
 
     /// Thread-safe completion tracking using OSAllocatedUnfairLock
     private let completionLock = OSAllocatedUnfairLock()
@@ -276,6 +302,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             return false
         }
 
+        guard hasDefaultInputDevice() else {
+            logger.warning("[FluidAudioSpeechRecognition] Pre-warm skipped: no default audio input device")
+            return false
+        }
+
         logger.info("[FluidAudioSpeechRecognition] Pre-warming recording pipeline...")
 
         let warmEngine = AVAudioEngine()
@@ -364,6 +395,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // Clear UI transcription for fresh start
         await MainActor.run {
             self.transcription = ""
+        }
+
+        guard hasDefaultInputDevice() else {
+            logger.error("[FluidAudioSpeechRecognition] Cannot start recording: no default audio input device")
+            throw FluidAudioError.noInputDeviceAvailable
         }
 
         // Create fresh audio engine - it will use the system default input device
@@ -958,6 +994,31 @@ final class FluidAudioTapProxy: @unchecked Sendable {
             await owner?.processAudioBuffer(samples, rms: rms)
         }
     }
+}
+
+private func hasDefaultInputDevice() -> Bool {
+    var deviceID = AudioDeviceID(bitPattern: 0)
+    var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultInputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+
+    let status = AudioObjectGetPropertyData(
+        AudioObjectID(kAudioObjectSystemObject),
+        &address,
+        0,
+        nil,
+        &propertySize,
+        &deviceID
+    )
+
+    guard status == noErr, propertySize == UInt32(MemoryLayout<AudioDeviceID>.size) else {
+        return false
+    }
+
+    return deviceID != AudioDeviceID(bitPattern: 0) && deviceID != kAudioObjectUnknown
 }
 
 /// Non-isolated helper to install tap without MainActor isolation
