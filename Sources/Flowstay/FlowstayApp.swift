@@ -11,6 +11,7 @@ import SwiftUI
 // Using NSApplicationMain instead of SwiftUI @main to avoid Swift 6 actor isolation crashes
 // The crash occurs when SwiftUI Scene body closures capture @MainActor isolated objects
 
+// swiftlint:disable type_body_length
 /// App delegate that manages the status bar item, popover, and all windows
 /// This is the main controller for the entire app - no SwiftUI App struct is used
 class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverController, @unchecked Sendable {
@@ -548,22 +549,22 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 guard let self else { return }
 
                 if isRecording {
-                if firstRecordingStartAt == nil {
-                    let now = Date()
-                    firstRecordingStartAt = now
-                    logStartupMetric("first recording start", at: now)
-                }
+                    if firstRecordingStartAt == nil {
+                        let now = Date()
+                        firstRecordingStartAt = now
+                        logStartupMetric("first recording start", at: now)
+                    }
                     if recordingStartupSafeModeActive {
                         logger.info("[AppDelegate] Recording startup safe mode active; skipping start side effects")
                     } else {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
-                            guard let self, self.engineCoordinator.isRecording else { return }
+                            guard let self, engineCoordinator.isRecording else { return }
                             AppDetectionService.shared.detectFrontmostApp()
-                            self.recordingTargetApp = AppDetectionService.shared.currentApp
-                            if let app = self.recordingTargetApp {
-                                self.logger.info("[AppDelegate] Captured recording target app: \(app.name) (\(app.bundleId))")
+                            recordingTargetApp = AppDetectionService.shared.currentApp
+                            if let app = recordingTargetApp {
+                                logger.info("[AppDelegate] Captured recording target app: \(app.name) (\(app.bundleId))")
                             } else {
-                                self.logger.info("[AppDelegate] Recording started with no detected target app")
+                                logger.info("[AppDelegate] Recording started with no detected target app")
                             }
                         }
                     }
@@ -1599,6 +1600,8 @@ extension FlowstayAppDelegate {
         onboardingWindowLevelBeforeAccessibilityPrompt = nil
     }
 }
+
+// swiftlint:enable type_body_length
 
 private final class OnboardingPanel: NSPanel {
     convenience init(contentViewController: NSViewController) {
