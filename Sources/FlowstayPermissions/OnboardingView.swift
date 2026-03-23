@@ -3,11 +3,45 @@ import FlowstayCore
 import KeyboardShortcuts
 import SwiftUI
 
+@MainActor
+private final class OnboardingViewHostBridge {
+    private let onComplete: (() -> Void)?
+    private let onOverlayModeChange: ((OnboardingOverlayMode) -> Void)?
+
+    private init(
+        onComplete: (() -> Void)?,
+        onOverlayModeChange: ((OnboardingOverlayMode) -> Void)?
+    ) {
+        self.onComplete = onComplete
+        self.onOverlayModeChange = onOverlayModeChange
+    }
+
+    static func make(
+        onComplete: (() -> Void)?,
+        onOverlayModeChange: ((OnboardingOverlayMode) -> Void)?
+    ) -> OnboardingViewHostBridge? {
+        guard onComplete != nil || onOverlayModeChange != nil else {
+            return nil
+        }
+        return OnboardingViewHostBridge(
+            onComplete: onComplete,
+            onOverlayModeChange: onOverlayModeChange
+        )
+    }
+
+    func overlayModeDidChange(_ mode: OnboardingOverlayMode) {
+        onOverlayModeChange?(mode)
+    }
+
+    func onboardingDidComplete() {
+        onComplete?()
+    }
+}
+
 public struct OnboardingView: View {
     @ObservedObject var permissionManager: PermissionManager
     let engineCoordinator: EngineCoordinatorViewModel
-    let onComplete: (() -> Void)?
-    let onOverlayModeChange: ((OnboardingOverlayMode) -> Void)?
+    private let hostBridge: OnboardingViewHostBridge?
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -24,15 +58,19 @@ public struct OnboardingView: View {
     ) {
         self.permissionManager = permissionManager
         self.engineCoordinator = engineCoordinator
-        self.onComplete = onComplete
-        self.onOverlayModeChange = onOverlayModeChange
+        hostBridge = OnboardingViewHostBridge.make(
+            onComplete: onComplete,
+            onOverlayModeChange: onOverlayModeChange
+        )
         _coordinator = StateObject(
             wrappedValue: OnboardingCoordinator(
                 permissionManager: permissionManager,
                 engineCoordinator: engineCoordinator,
                 appState: appState,
-                onAccessibilityPromptWillPresent: onAccessibilityPromptWillPresent,
-                onAccessibilityPromptDidComplete: onAccessibilityPromptDidComplete
+                accessibilityPromptHandler: OnboardingAccessibilityPromptHandler.make(
+                    onWillPresent: onAccessibilityPromptWillPresent,
+                    onDidComplete: onAccessibilityPromptDidComplete
+                )
             )
         )
     }
@@ -58,13 +96,25 @@ public struct OnboardingView: View {
         .frame(width: 860, height: 660)
         .onAppear {
             coordinator.onAppear()
-            onOverlayModeChange?(coordinator.overlayMode)
+            hostBridge?.overlayModeDidChange(coordinator.overlayMode)
         }
         .onChange(of: coordinator.overlayMode) { _, newMode in
-            onOverlayModeChange?(newMode)
+            hostBridge?.overlayModeDidChange(newMode)
+        }
+        .onChange(of: coordinator.viewCommand) { _, command in
+            guard let command else { return }
+
+            switch command {
+            case .dismissAfterDeferral:
+                dismiss()
+            case .completeOnboarding:
+                hostBridge?.onboardingDidComplete()
+            }
+
+            coordinator.clearViewCommand()
         }
         .onDisappear {
-            onOverlayModeChange?(.suppressed)
+            hostBridge?.overlayModeDidChange(.suppressed)
             coordinator.cleanup()
         }
     }
@@ -166,28 +216,15 @@ public struct OnboardingView: View {
     private func sceneView(_ theme: OnboardingTheme) -> some View {
         switch coordinator.currentScene {
         case .welcome:
-            WelcomeSceneView(theme: theme) {
-                advance()
-            }
+            WelcomeSceneView(theme: theme, coordinator: coordinator)
         case .readiness:
-            ReadinessSceneView(theme: theme, coordinator: coordinator, onContinue: {
-                advance()
-            }, onDefer: {
-                coordinator.deferOnboardingUntilModelReady()
-                dismiss()
-            })
+            ReadinessSceneView(theme: theme, coordinator: coordinator)
         case .firstWin:
-            LiveDictationSceneView(theme: theme, coordinator: coordinator) {
-                advance()
-            }
+            LiveDictationSceneView(theme: theme, coordinator: coordinator)
         case .quickSetup:
-            QuickSetupSceneView(theme: theme, coordinator: coordinator) {
-                advance()
-            }
+            QuickSetupSceneView(theme: theme, coordinator: coordinator)
         case .done:
-            DoneSceneView(theme: theme, coordinator: coordinator) {
-                completeOnboarding()
-            }
+            DoneSceneView(theme: theme, coordinator: coordinator)
         }
     }
 
@@ -197,24 +234,11 @@ public struct OnboardingView: View {
             removal: .opacity
         )
     }
-
-    private func advance() {
-        withAnimation(.easeInOut(duration: 0.2)) {
-            coordinator.moveNext()
-        }
-    }
-
-    private func completeOnboarding() {
-        guard coordinator.canCompleteOnboarding else { return }
-
-        UserDefaults.standard.hasCompletedOnboarding = true
-        onComplete?()
-    }
 }
 
 private struct WelcomeSceneView: View {
     let theme: OnboardingTheme
-    let onStart: () -> Void
+    @ObservedObject var coordinator: OnboardingCoordinator
 
     var body: some View {
         VStack(spacing: 22) {
@@ -228,7 +252,9 @@ private struct WelcomeSceneView: View {
             }
 
             Button("Start setup") {
-                onStart()
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    coordinator.moveNext()
+                }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -258,8 +284,6 @@ private struct WelcomeSceneView: View {
 private struct ReadinessSceneView: View {
     let theme: OnboardingTheme
     @ObservedObject var coordinator: OnboardingCoordinator
-    let onContinue: () -> Void
-    let onDefer: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -345,7 +369,7 @@ private struct ReadinessSceneView: View {
                 HStack(spacing: 12) {
                     if coordinator.canDeferModelDownload {
                         Button("Notify me when ready") {
-                            onDefer()
+                            coordinator.deferOnboardingUntilModelReady()
                         }
                         .buttonStyle(.bordered)
                     }
@@ -359,7 +383,9 @@ private struct ReadinessSceneView: View {
                     }
 
                     Button("Continue to the shortcuts") {
-                        onContinue()
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            coordinator.moveNext()
+                        }
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(theme.accent)
@@ -431,7 +457,6 @@ private struct ReadinessSceneView: View {
 private struct LiveDictationSceneView: View {
     let theme: OnboardingTheme
     @ObservedObject var coordinator: OnboardingCoordinator
-    let onContinue: () -> Void
 
     var body: some View {
         GeometryReader { proxy in
@@ -548,7 +573,9 @@ private struct LiveDictationSceneView: View {
 
             if coordinator.canContinueFromTutorial {
                 Button("Continue") {
-                    onContinue()
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        coordinator.moveNext()
+                    }
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(theme.accent)
@@ -631,7 +658,6 @@ private struct ShortcutPickerSheetView: View {
 private struct QuickSetupSceneView: View {
     let theme: OnboardingTheme
     @ObservedObject var coordinator: OnboardingCoordinator
-    let onContinue: () -> Void
 
     var body: some View {
         VStack(spacing: 20) {
@@ -722,7 +748,9 @@ private struct QuickSetupSceneView: View {
             .primarySurface(theme, padding: 18)
 
             Button("Continue") {
-                onContinue()
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    coordinator.moveNext()
+                }
             }
             .buttonStyle(.borderedProminent)
             .tint(theme.accent)
@@ -734,7 +762,6 @@ private struct QuickSetupSceneView: View {
 private struct DoneSceneView: View {
     let theme: OnboardingTheme
     @ObservedObject var coordinator: OnboardingCoordinator
-    let onFinish: () -> Void
 
     var body: some View {
         VStack(spacing: 18) {
@@ -754,7 +781,7 @@ private struct DoneSceneView: View {
             .multilineTextAlignment(.center)
 
             Button("Open Flowstay") {
-                onFinish()
+                coordinator.completeOnboarding()
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)

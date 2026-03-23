@@ -11,6 +11,9 @@ public extension UserDefaults {
         static let hasCompletedOnboarding = "hasCompletedOnboarding"
         static let notificationPromptAttempted = "notificationPromptAttempted"
         static let onboardingDeferredForModelDownload = "onboardingDeferredForModelDownload"
+        static let hasValidatedRecordingStartup = "hasValidatedRecordingStartup"
+        static let recordingStartupPending = "recordingStartupPending"
+        static let recordingStartupRecoveryMode = "recordingStartupRecoveryMode"
     }
 
     /// Convenience methods for app settings
@@ -27,6 +30,21 @@ public extension UserDefaults {
     var onboardingDeferredForModelDownload: Bool {
         get { bool(forKey: FlowstayKeys.onboardingDeferredForModelDownload) }
         set { set(newValue, forKey: FlowstayKeys.onboardingDeferredForModelDownload) }
+    }
+
+    var hasValidatedRecordingStartup: Bool {
+        get { bool(forKey: FlowstayKeys.hasValidatedRecordingStartup) }
+        set { set(newValue, forKey: FlowstayKeys.hasValidatedRecordingStartup) }
+    }
+
+    var recordingStartupPending: Bool {
+        get { bool(forKey: FlowstayKeys.recordingStartupPending) }
+        set { set(newValue, forKey: FlowstayKeys.recordingStartupPending) }
+    }
+
+    var recordingStartupRecoveryMode: Bool {
+        get { bool(forKey: FlowstayKeys.recordingStartupRecoveryMode) }
+        set { set(newValue, forKey: FlowstayKeys.recordingStartupRecoveryMode) }
     }
 }
 

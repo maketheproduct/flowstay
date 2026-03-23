@@ -34,6 +34,7 @@ public nonisolated enum ProcessingResult: Sendable {
 }
 
 /// Main engine for processing transcriptions with personas using AI providers
+@MainActor
 public class PersonasEngine: ObservableObject {
     @Published public var isProcessing: Bool = false
     @Published public var lastError: PersonasError?

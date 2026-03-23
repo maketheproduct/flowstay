@@ -1,6 +1,5 @@
 import AVFoundation
 import FlowstayCore
-import KeyboardShortcuts
 import SwiftUI
 
 /// Clean, minimal menu bar dropdown content
@@ -114,15 +113,6 @@ public struct MenuBarView: View {
         .frame(maxHeight: .infinity)
         .padding(.vertical, 16)
         .frame(height: preferredPopoverHeight)
-        .onAppear {
-            // NOTE: GlobalShortcutsManager.initialize is now called from AppInitializationService
-            // (either during onboarding completion or in applicationDidFinishLaunching for returning users)
-
-            // Initialize engine callbacks and auto-paste settings
-            Task { @MainActor in
-                await initializeAppState()
-            }
-        }
     }
 
     // MARK: - Header Section
@@ -168,7 +158,7 @@ public struct MenuBarView: View {
             .padding(.horizontal, 16)
 
             // Permission warnings
-            if !permissionManager.criticalPermissionsGranted {
+                if !permissionManager.criticalPermissionsGranted {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 11))
@@ -180,12 +170,14 @@ public struct MenuBarView: View {
 
                     Spacer()
 
-                    Button("Fix") {
-                        openOnboardingWindow()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.flowstayBlue)
+                    Text("Fix")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.flowstayBlue)
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            openOnboardingWindow()
+                        }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 4)
@@ -206,12 +198,14 @@ public struct MenuBarView: View {
 
                     Spacer()
 
-                    Button("Resume") {
-                        openOnboardingWindow()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.flowstayBlue)
+                    Text("Resume")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.flowstayBlue)
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            openOnboardingWindow()
+                        }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 4)
@@ -239,13 +233,15 @@ public struct MenuBarView: View {
 
                     Spacer(minLength: 8)
 
-                    Button("Fix") {
-                        openRecoveryWindow()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(Color.flowstayBlue)
-                    .fixedSize()
+                    Text("Fix")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.flowstayBlue)
+                        .fixedSize()
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            openRecoveryWindow()
+                        }
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 6)
@@ -288,12 +284,16 @@ public struct MenuBarView: View {
                 Spacer()
 
                 if !appState.recentTranscripts.isEmpty {
-                    Button("Clear") {
-                        appState.recentTranscripts.removeAll()
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 11))
-                    .foregroundStyle(Color.flowstayBlue)
+                    Text("Clear")
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color.flowstayBlue)
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            DispatchQueue.main.async {
+                                appState.recentTranscripts.removeAll()
+                            }
+                        }
                 }
             }
             .padding(.horizontal, 16)
@@ -302,7 +302,7 @@ public struct MenuBarView: View {
                 // Empty state placeholder
                 VStack {
                     Spacer()
-                    Text("Press \(toggleShortcutPrompt) to start transcribing in any app")
+                    Text("Use your Flowstay shortcut to start transcribing in any app")
                         .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -332,54 +332,45 @@ public struct MenuBarView: View {
 
     // MARK: - Actions Section
 
-    private var toggleShortcutPrompt: String {
-        if let shortcut = KeyboardShortcuts.getShortcut(for: .toggleDictation) {
-            return safeShortcutDescription(shortcut)
-        }
-        return "⌥Space"
-    }
-
     private var actionsSection: some View {
         VStack(spacing: 12) {
             // Modern recording button
             ModernRecordingButton(
                 isRecording: engineCoordinator.isRecording,
                 action: {
-                    MenuBarHelper.toggleTranscription()
+                    DispatchQueue.main.async {
+                        MenuBarHelper.toggleTranscription()
+                    }
                 }
             )
             .padding(.horizontal, 16)
 
             // Bottom actions
             HStack(spacing: 12) {
-                Button(action: openSettingsWindow) {
-                    Label("Settings", systemImage: "gear")
-                        .font(.system(size: 12))
-                }
-                .buttonStyle(.borderless)
+                menuActionLabel(title: "Settings", systemImage: "gear")
+                    .onTapGesture(perform: openSettingsWindow)
 
                 if recoverySnapshot.isDegradedLaunch {
-                    Button(action: openRecoveryWindow) {
-                        Label("Fix Startup Issues", systemImage: "wrench.and.screwdriver")
-                            .font(.system(size: 12))
-                    }
-                    .buttonStyle(.borderless)
+                    menuActionLabel(title: "Fix Startup Issues", systemImage: "wrench.and.screwdriver")
+                        .onTapGesture(perform: openRecoveryWindow)
                 }
 
                 Spacer()
 
-                Button("Quit") {
-                    // Post notification to allow modals to dismiss first
-                    NotificationCenter.default.post(name: Notification.Name("FlowstayWillTerminate"), object: nil)
+                Text("Quit")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 2)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        // Post notification to allow modals to dismiss first
+                        NotificationCenter.default.post(name: Notification.Name("FlowstayWillTerminate"), object: nil)
 
-                    // Give modals time to dismiss before terminating
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                        NSApplication.shared.terminate(nil)
+                        // Give modals time to dismiss before terminating
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            NSApplication.shared.terminate(nil)
+                        }
                     }
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
@@ -430,22 +421,28 @@ public struct MenuBarView: View {
         NSPasteboard.general.setString(text, forType: .string)
     }
 
-    private func openSettingsWindow() {
-        // Close menu bar popover first
-        MenuBarHelper.closeMenuBar()
+    private func menuActionLabel(title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.system(size: 12))
+            .contentShape(Rectangle())
+    }
 
-        // Open the settings window via delegate
-        MenuBarHelper.openSettings()
+    private func openSettingsWindow() {
+        DispatchQueue.main.async {
+            MenuBarHelper.openSettings()
+        }
     }
 
     private func openOnboardingWindow() {
-        // Open the onboarding window via delegate
-        MenuBarHelper.openOnboarding()
+        DispatchQueue.main.async {
+            MenuBarHelper.openOnboarding()
+        }
     }
 
     private func openRecoveryWindow() {
-        MenuBarHelper.closeMenuBar()
-        MenuBarHelper.openRecovery()
+        DispatchQueue.main.async {
+            MenuBarHelper.openRecovery()
+        }
     }
 
     private func startPulseAnimation() {
@@ -480,27 +477,6 @@ public struct MenuBarView: View {
             animationPhase = 0
         }
     }
-
-    @MainActor
-    private func initializeAppState() async {
-        // Check permissions on launch
-        await permissionManager.checkPermissions()
-        print("[MenuBarView] Initial permission check:")
-        print("  - Mic: \(permissionManager.microphoneStatus)")
-        print("  - Accessibility: \(permissionManager.accessibilityStatus)")
-
-        // Show onboarding automatically if permissions are missing
-        if !permissionManager.criticalPermissionsGranted {
-            print("[MenuBarView] Auto-showing onboarding: criticalPermissions=\(permissionManager.criticalPermissionsGranted)")
-            openOnboardingWindow()
-        }
-
-        // Default auto-paste to ON if user has accessibility permission
-        if permissionManager.hasAccessibilityPermission, !UserDefaults.standard.bool(forKey: "autoPasteConfigured") {
-            appState.autoPasteEnabled = true
-            UserDefaults.standard.set(true, forKey: "autoPasteConfigured")
-        }
-    }
 }
 
 // MARK: - Supporting Views
@@ -528,77 +504,75 @@ struct TranscriptRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Main row (always visible)
-            Button(action: {
+            HStack(alignment: .top, spacing: 8) {
+                // Disclosure indicator (always present for alignment, invisible if not processed)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .frame(width: 12)
+                    .padding(.top, 2)
+                    .opacity(isExpandable ? 1 : 0)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    // Persona badge
+                    if transcript.wasProcessed,
+                       let personaId = transcript.personaId,
+                       let persona = appState.allPersonas.first(where: { $0.id == personaId })
+                    {
+                        HStack(spacing: 4) {
+                            if let emoji = persona.emoji {
+                                Text(emoji)
+                                    .font(.system(size: 9))
+                            }
+                            Text(persona.name)
+                                .font(.system(size: 9, weight: .medium))
+                        }
+                        .foregroundStyle(Color.flowstayBlue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.flowstayBlue.opacity(0.1))
+                        .clipShape(Capsule())
+                    }
+
+                    // Main text (processed or unprocessed)
+                    Text(transcript.text)
+                        .font(.system(size: 12))
+                        .lineLimit(isExpanded ? nil : 2)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .multilineTextAlignment(.leading)
+
+                    // Timestamp
+                    Text(RelativeDateTimeFormatter().localizedString(for: transcript.timestamp, relativeTo: Date()))
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
                 if isExpandable {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         isExpanded.toggle()
                     }
                 }
-            }) {
-                HStack(alignment: .top, spacing: 8) {
-                    // Disclosure indicator (always present for alignment, invisible if not processed)
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .frame(width: 12)
-                        .padding(.top, 2)
-                        .opacity(isExpandable ? 1 : 0)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        // Persona badge
-                        if transcript.wasProcessed,
-                           let personaId = transcript.personaId,
-                           let persona = appState.allPersonas.first(where: { $0.id == personaId })
-                        {
-                            HStack(spacing: 4) {
-                                if let emoji = persona.emoji {
-                                    Text(emoji)
-                                        .font(.system(size: 9))
-                                }
-                                Text(persona.name)
-                                    .font(.system(size: 9, weight: .medium))
-                            }
-                            .foregroundStyle(Color.flowstayBlue)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(Color.flowstayBlue.opacity(0.1))
-                            .clipShape(Capsule())
-                        }
-
-                        // Main text (processed or unprocessed)
-                        Text(transcript.text)
-                            .font(.system(size: 12))
-                            .lineLimit(isExpanded ? nil : 2)
-                            .truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .multilineTextAlignment(.leading)
-
-                        // Timestamp
-                        Text(RelativeDateTimeFormatter().localizedString(for: transcript.timestamp, relativeTo: Date()))
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-                }
             }
-            .buttonStyle(.plain)
             .padding(.horizontal, 16)
             .padding(.vertical, 6)
             .background(isHovered && !isExpanded ? Color.gray.opacity(0.1) : Color.clear)
             .overlay(alignment: .topTrailing) {
                 // Copy button (on hover) - always available for both collapsed and expanded states
                 if isHovered {
-                    Button {
-                        onCopy()
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                            .font(.system(size: 11))
-                    }
-                    .buttonStyle(.borderless)
-                    .padding(.trailing, 16)
-                    .padding(.top, 6)
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 11))
+                        .padding(.trailing, 16)
+                        .padding(.top, 6)
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            onCopy()
+                        }
                 }
             }
             .onHover(perform: onHover)
@@ -618,16 +592,15 @@ struct TranscriptRow: View {
 
                             Spacer()
 
-                            Button {
-                                if let original = transcript.originalText {
-                                    copyToClipboard(original)
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 11))
+                                .opacity(isHoveredOriginal ? 1.0 : 0.4)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if let original = transcript.originalText {
+                                        copyToClipboard(original)
+                                    }
                                 }
-                            } label: {
-                                Image(systemName: "doc.on.doc")
-                                    .font(.system(size: 11))
-                            }
-                            .buttonStyle(.borderless)
-                            .opacity(isHoveredOriginal ? 1.0 : 0.4)
                         }
 
                         if let original = transcript.originalText {
@@ -664,33 +637,26 @@ struct ModernRecordingButton: View {
     let isRecording: Bool
     let action: () -> Void
 
-    @State private var isPressed = false
-
     var body: some View {
-        Button(action: action) {
-            ZStack {
-                // Invisible placeholder to maintain consistent width
-                HStack(spacing: 8) {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .opacity(0)
+        HStack(spacing: 8) {
+            Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                .font(.system(size: 14, weight: .semibold))
 
-                    Text("Start transcription")
-                        .font(.system(size: 14, weight: .medium))
-                        .opacity(0)
-                }
+            Text(isRecording ? "Stop transcription" : "Start transcription")
+                .font(.system(size: 14, weight: .medium))
+        }
+        .modifier(ModernRecordingButtonModifier(isRecording: isRecording))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onTapGesture(perform: action)
+    }
+}
 
-                // Actual content
-                HStack(spacing: 8) {
-                    Image(systemName: isRecording ? "stop.fill" : "mic.fill")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(isRecording ? .white : .primary)
+private struct ModernRecordingButtonModifier: ViewModifier {
+    let isRecording: Bool
 
-                    Text(isRecording ? "Stop transcription" : "Start transcription")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(isRecording ? .white : .primary)
-                }
-            }
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(isRecording ? Color.white : Color.primary)
             .padding(.horizontal, 20)
             .padding(.vertical, 10)
             .frame(maxWidth: .infinity)
@@ -707,15 +673,6 @@ struct ModernRecordingButton: View {
                         }
                 }
             }
-            .scaleEffect(isPressed ? 0.97 : 1.0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: isPressed)
-        }
-        .buttonStyle(.plain)
-        .onLongPressGesture(minimumDuration: 0, maximumDistance: .infinity) {
-            // Long press completed
-        } onPressingChanged: { isPressing in
-            isPressed = isPressing
-        }
     }
 }
 

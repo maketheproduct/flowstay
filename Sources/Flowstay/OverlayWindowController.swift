@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import FlowstayCore
 import FlowstayUI
 import os
@@ -67,6 +68,7 @@ final class OverlayWindowController: NSObject {
     private let window: NSPanel
     private let hostingView: NSHostingView<FlowstayUI.OverlayBubbleView>
     private let presentationModel: OverlayPresentationModel
+    private var cancellables = Set<AnyCancellable>()
 
     private var displayState: OverlayDisplayState = .recording
     private var layoutMode: OverlayLayoutMode = .splitAroundNotch
@@ -96,10 +98,13 @@ final class OverlayWindowController: NSObject {
 
         presentationModel = OverlayPresentationModel(
             displayState: .recording,
-            layoutMode: .splitAroundNotch,
-            rightSegmentMode: .liveWave,
+            layoutMode: .leftExtension,
+            rightSegmentMode: .hidden,
             metrics: notchSafeMetrics,
-            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+            isRecording: engineCoordinator.isRecording,
+            audioLevel: engineCoordinator.audioLevel,
+            waveformSamples: engineCoordinator.waveformSamples
         )
 
         window = NSPanel(
@@ -127,7 +132,6 @@ final class OverlayWindowController: NSObject {
 
         hostingView = NSHostingView(
             rootView: FlowstayUI.OverlayBubbleView(
-                engineCoordinator: engineCoordinator,
                 presentation: presentationModel
             )
         )
@@ -135,6 +139,30 @@ final class OverlayWindowController: NSObject {
         window.contentView = hostingView
 
         super.init()
+        bindPresentationModel()
+    }
+
+    private func bindPresentationModel() {
+        engineCoordinator.$isRecording
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] isRecording in
+                self?.presentationModel.isRecording = isRecording
+            }
+            .store(in: &cancellables)
+
+        engineCoordinator.$audioLevel
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] audioLevel in
+                self?.presentationModel.audioLevel = audioLevel
+            }
+            .store(in: &cancellables)
+
+        engineCoordinator.$waveformSamples
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] waveformSamples in
+                self?.presentationModel.waveformSamples = waveformSamples
+            }
+            .store(in: &cancellables)
     }
 
     func showRecording(on screen: NSScreen?) {

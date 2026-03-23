@@ -2,7 +2,6 @@ import AppKit
 
 /// Protocol for controlling the menu bar popover and windows
 /// Implemented by FlowstayAppDelegate
-@MainActor
 public protocol MenuBarPopoverController: AnyObject {
     func showPopover()
     func closePopover()
@@ -13,43 +12,62 @@ public protocol MenuBarPopoverController: AnyObject {
 }
 
 /// Helper to programmatically control the menu bar popover and windows
-@MainActor
 public class MenuBarHelper {
     /// Delegate that controls the popover and windows (set by FlowstayAppDelegate)
-    public weak static var delegate: (any MenuBarPopoverController)?
+    public nonisolated(unsafe) weak static var delegate: (any MenuBarPopoverController)?
+
+    private static func performOnMain(_ action: @escaping @Sendable () -> Void) {
+        if Thread.isMainThread {
+            action()
+        } else {
+            DispatchQueue.main.async(execute: action)
+        }
+    }
 
     /// Programmatically open the menu bar popover
     public static func openMenuBar() {
-        if let delegate {
-            print("[MenuBarHelper] Opening menu bar via delegate")
-            delegate.showPopover()
-        } else {
-            print("[MenuBarHelper] ⚠️ No delegate set, cannot open menu bar")
+        performOnMain {
+            if let delegate {
+                print("[MenuBarHelper] Opening menu bar via delegate")
+                delegate.showPopover()
+            } else {
+                print("[MenuBarHelper] ⚠️ No delegate set, cannot open menu bar")
+            }
         }
     }
 
     /// Programmatically close the menu bar popover
     public static func closeMenuBar() {
-        delegate?.closePopover()
+        performOnMain {
+            delegate?.closePopover()
+        }
     }
 
     /// Open the settings window
     public static func openSettings() {
-        delegate?.openSettingsWindow()
+        performOnMain {
+            delegate?.openSettingsWindow()
+        }
     }
 
     /// Open the onboarding window
     public static func openOnboarding() {
-        delegate?.openOnboardingWindow()
+        performOnMain {
+            delegate?.openOnboardingWindow()
+        }
     }
 
     /// Open the startup recovery window
     public static func openRecovery() {
-        delegate?.openRecoveryWindow()
+        performOnMain {
+            delegate?.openRecoveryWindow()
+        }
     }
 
     /// Toggle transcription using the app delegate policy path.
     public static func toggleTranscription() {
-        delegate?.toggleTranscriptionFromMenuBar()
+        performOnMain {
+            delegate?.toggleTranscriptionFromMenuBar()
+        }
     }
 }

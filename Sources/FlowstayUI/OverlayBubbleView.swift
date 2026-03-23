@@ -47,7 +47,6 @@ public struct OverlayNotchSafeMetrics: Equatable, Sendable {
 }
 
 public struct OverlayBubbleView: View {
-    @ObservedObject var engineCoordinator: EngineCoordinatorViewModel
     @ObservedObject var presentation: OverlayPresentationModel
 
     @Environment(\.accessibilityReduceMotion) private var environmentReduceMotion
@@ -55,10 +54,8 @@ public struct OverlayBubbleView: View {
     @State private var rightOutroOpacity: CGFloat = 1
 
     public init(
-        engineCoordinator: EngineCoordinatorViewModel,
         presentation: OverlayPresentationModel
     ) {
-        self.engineCoordinator = engineCoordinator
         self.presentation = presentation
     }
 
@@ -134,9 +131,9 @@ public struct OverlayBubbleView: View {
 
         case .liveWave, .outro:
             MiniWaveformIcon(
-                level: engineCoordinator.audioLevel,
-                waveformSamples: engineCoordinator.waveformSamples,
-                isActive: engineCoordinator.isRecording || presentation.displayState == .recording,
+                level: presentation.audioLevel,
+                waveformSamples: presentation.waveformSamples,
+                isActive: presentation.isRecording || presentation.displayState == .recording,
                 reduceMotion: reduceMotion,
                 collapseProgress: rightOutroProgress,
                 outroOpacity: rightOutroOpacity,
@@ -368,20 +365,13 @@ private struct LoadingPulseIcon: View {
     let containerWidth: CGFloat
 
     var body: some View {
-        if reduceMotion {
-            bars(at: 0)
-        } else {
-            TimelineView(.animation(minimumInterval: 1.0 / 40.0)) { timeline in
-                bars(at: timeline.date.timeIntervalSinceReferenceDate)
-            }
-        }
+        bars()
     }
 
-    private func bars(at time: TimeInterval) -> some View {
-        let phase = time * 4.4
+    private func bars() -> some View {
         return HStack(spacing: 1.6) {
             ForEach(0 ..< 4, id: \.self) { index in
-                let wave = 0.5 + 0.5 * sin(phase + Double(index) * 0.72)
+                let wave = reduceMotion ? 0.35 : (0.4 + (0.15 * Double(index)))
                 let height = max(3.0, 4.0 + wave * Double(containerHeight - 6))
 
                 Capsule(style: .continuous)
@@ -404,25 +394,17 @@ private struct MiniWaveformIcon: View {
     let barContainerWidth: CGFloat
 
     var body: some View {
-        Group {
-            if reduceMotion {
-                waveformBars(at: 0)
-            } else {
-                TimelineView(.animation(minimumInterval: 1.0 / 50.0)) { timeline in
-                    waveformBars(at: timeline.date.timeIntervalSinceReferenceDate)
-                }
-            }
-        }
-        .opacity((isActive ? 0.96 : 0.18) * outroOpacity)
+        waveformBars()
+            .opacity((isActive ? 0.96 : 0.18) * outroOpacity)
+            .animation(.easeOut(duration: 0.08), value: waveformSamples)
+            .animation(.easeOut(duration: 0.08), value: level)
     }
 
-    private func waveformBars(at time: TimeInterval) -> some View {
+    private func waveformBars() -> some View {
         let raw = max(0.0, Double(level))
         let clampedLevel = min(1.0, raw * 6.0)
         let levelNorm = min(1.0, max(0.0, pow(clampedLevel, 1.20)))
-        let activity = isActive ? max(0.03, levelNorm) : 0.0
 
-        let phase = time * (2.6 + activity * 0.95)
         let sampleBuckets = bucketedSamples(count: 6)
         let centerIndex = Double(sampleBuckets.count - 1) * 0.5
         let collapse = Double(max(0, min(1, collapseProgress)))
@@ -436,8 +418,8 @@ private struct MiniWaveformIcon: View {
                 let sample = Double(sampleBuckets[index])
                 let bucketNorm = min(1.0, max(0.0, sample * 2.0))
                 let combined = min(1.0, max(0.0, (0.65 * bucketNorm) + (0.35 * levelNorm)))
-                let jitter = 0.82 + 0.18 * sin(phase + Double(index) * 0.52)
-                let height = max(dotHeight, dotHeight + (amplitudeRange * combined * jitter))
+                let shapeBias = 0.84 + (0.06 * Double(index % 3))
+                let height = max(dotHeight, dotHeight + (amplitudeRange * combined * shapeBias))
                 let centered = Double(index) - centerIndex
                 let direction = centered < 0 ? 1.0 : (centered > 0 ? -1.0 : 0.0)
                 let travel = (abs(centered) + 0.5) * 2.3
@@ -458,21 +440,22 @@ private struct MiniWaveformIcon: View {
     }
 
     private func bucketedSamples(count: Int) -> [Float] {
-        if waveformSamples.isEmpty {
+        let samples = waveformSamples
+        if samples.isEmpty {
             return Array(repeating: 0, count: count)
         }
 
-        let bucketSize = max(1, waveformSamples.count / count)
+        let bucketSize = max(1, samples.count / count)
         var buckets: [Float] = []
         buckets.reserveCapacity(count)
 
         var index = 0
-        while index < waveformSamples.count, buckets.count < count {
-            let end = min(waveformSamples.count, index + bucketSize)
+        while index < samples.count, buckets.count < count {
+            let end = min(samples.count, index + bucketSize)
             var peak: Float = 0
             var i = index
             while i < end {
-                peak = max(peak, abs(waveformSamples[i]))
+                peak = max(peak, abs(samples[i]))
                 i += 1
             }
             buckets.append(min(1, peak))
