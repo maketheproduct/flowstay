@@ -68,6 +68,10 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     /// Safety watchdog task — cancelled when real completion fires
     private var safetyWatchdogTask: Task<Void, Never>?
 
+    /// Stop finalization task — awaited before starting a new recording so
+    /// delayed stop cleanup cannot mutate a newer session's engine or buffers.
+    private var stopFinalizationTask: Task<Void, Never>?
+
     // FluidAudio components - nonisolated(unsafe) because AsrManager/AsrModels aren't Sendable
     /// SAFETY: nonisolated(unsafe) for AsrManager/AsrModels because they don't conform to Sendable.
     /// Thread safety is guaranteed by MainActor isolation - all access to these properties
@@ -131,6 +135,32 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         self.init(appState: nil)
     }
 
+    private func waitForPendingStopFinalizationIfNeeded() async {
+        guard let stopFinalizationTask else { return }
+
+        logger.info("[FluidAudioSpeechRecognition] Waiting for previous stop finalization to complete before starting a new recording")
+        await stopFinalizationTask.value
+    }
+
+    private func resetSpeechActivityTracking() {
+        hasDetectedSpeechInCurrentSession = false
+        lastStrongSpeechDetectedAt = nil
+        lastSpeechActivityAt = nil
+    }
+
+    private func resolveStopFinalizationDecision(stopRequestedAt: Date) -> RecordingStopFinalizationDecision {
+        RecordingStopFinalizationPolicy.resolve(
+            RecordingStopFinalizationInput(
+                stopRequestedAt: stopRequestedAt,
+                // Use any accepted trailing speech activity here, not just strong peaks.
+                lastSpeechDetectedAt: lastSpeechActivityAt,
+                minimumFlushDelay: trailingBufferDelay,
+                requiredSpeechTailGap: requiredSpeechTailGap,
+                maximumFlushDelay: maximumTrailingBufferDelay
+            )
+        )
+    }
+
     deinit {
         cleanup()
     }
@@ -140,6 +170,10 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         Task { @MainActor in
             // Cancel download monitoring task
             downloadMonitorTask?.cancel()
+            stopFinalizationTask?.cancel()
+            stopFinalizationTask = nil
+            safetyWatchdogTask?.cancel()
+            safetyWatchdogTask = nil
 
             // Clean up timers to prevent leaks
             audioLevelTimer?.invalidate()
@@ -376,11 +410,13 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             )
         }
 
+        await waitForPendingStopFinalizationIfNeeded()
+
         // Ensure we're not already recording
         if isRecording {
             logger.info("[FluidAudioSpeechRecognition] Already recording, stopping first...")
             stopRecording()
-            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+            await waitForPendingStopFinalizationIfNeeded()
         }
 
         // Reset all state for fresh transcription
@@ -389,9 +425,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                 hasCalledCompletion = false
             }
             userInitiatedStop = false
-            hasDetectedSpeechInCurrentSession = false
-            lastStrongSpeechDetectedAt = nil
-            lastSpeechActivityAt = nil
+            resetSpeechActivityTracking()
         }
 
         // Clear UI transcription for fresh start
@@ -491,29 +525,24 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
     public func stopRecording() {
         logger.info("[FluidAudioSpeechRecognition] Stopping recording...")
+        guard stopFinalizationTask == nil else {
+            logger.debug("[FluidAudioSpeechRecognition] Stop finalization already in progress")
+            return
+        }
 
         userInitiatedStop = true
         let stopRequestedAt = Date()
-        let stopDecision = RecordingStopFinalizationPolicy.resolve(
-            RecordingStopFinalizationInput(
-                stopRequestedAt: stopRequestedAt,
-                // Use any accepted trailing speech activity here, not just strong peaks.
-                lastSpeechDetectedAt: lastSpeechActivityAt,
-                minimumFlushDelay: trailingBufferDelay,
-                requiredSpeechTailGap: requiredSpeechTailGap,
-                maximumFlushDelay: maximumTrailingBufferDelay
-            )
-        )
 
         // Mark as stopped for UI immediately
         isRecording = false
         audioLevel = 0.0
         waveformSamples = []
         stopAudioLevelMonitoring()
-        stopSilenceDetectionTimer()
+        stopSilenceDetectionTimer(resetSpeechActivity: false)
 
         // Capture the tap proxy reference before cleanup
         let proxy = tapProxy
+        let engineAtStop = audioEngine
 
         // Safety watchdog: if the cleanup chain below hasn't fired onTranscriptionComplete
         // within 40 seconds (must exceed 35s finalize timeout + margin), force-fire it so
@@ -536,23 +565,44 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // CRITICAL: Don't immediately stop audio engine
         // Audio tap has internal buffers that need time to be delivered
         // Stopping engine immediately would lose trailing audio
-        Task { @MainActor in
-            let lastSpeechDescription = stopDecision.timeSinceLastSpeechAtStop.map {
+        stopFinalizationTask = Task { @MainActor in
+            defer {
+                stopFinalizationTask = nil
+            }
+
+            let initialDecision = resolveStopFinalizationDecision(stopRequestedAt: stopRequestedAt)
+            let lastSpeechDescription = initialDecision.timeSinceLastSpeechAtStop.map {
                 String(format: "%.3f", $0)
             } ?? "none"
-            let chosenDelayStr = String(format: "%.3f", stopDecision.delayBeforeTapRemoval)
+            let chosenDelayStr = String(format: "%.3f", initialDecision.delayBeforeTapRemoval)
             logger.debug(
-                "[FluidAudio] stop requested; last speech delta: \(lastSpeechDescription, privacy: .public)s; delay: \(chosenDelayStr, privacy: .public)s"
+                "[FluidAudio] stop requested; initial speech delta: \(lastSpeechDescription, privacy: .public)s; target delay: \(chosenDelayStr, privacy: .public)s"
             )
 
-            // Step 1: Wait for audio tap to deliver remaining buffers and preserve short trailing speech.
-            logger.debug("[FluidAudio] Waiting for audio tap buffer delivery...")
-            try? await Task.sleep(nanoseconds: UInt64(stopDecision.delayBeforeTapRemoval * 1_000_000_000))
+            // Step 1: Always wait the minimum flush delay so any in-flight tap tasks
+            // can refresh trailing speech activity before we make the final stop decision.
+            logger.debug("[FluidAudio] Waiting for minimum audio tap flush...")
+            try? await Task.sleep(nanoseconds: UInt64(trailingBufferDelay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+
+            let stopDecision = resolveStopFinalizationDecision(stopRequestedAt: stopRequestedAt)
+            let elapsedSinceStop = Date().timeIntervalSince(stopRequestedAt)
+            let remainingDelay = max(0, stopDecision.delayBeforeTapRemoval - elapsedSinceStop)
+
+            if remainingDelay > 0 {
+                let remainingDelayStr = String(format: "%.3f", remainingDelay)
+                logger.debug("[FluidAudio] Extending stop finalization by \(remainingDelayStr, privacy: .public)s for trailing speech")
+                try? await Task.sleep(nanoseconds: UInt64(remainingDelay * 1_000_000_000))
+                guard !Task.isCancelled else { return }
+            }
 
             // Step 2: Remove the tap first to stop new audio from being processed
             // This is safer than stopping the engine immediately
-            if let engine = self.audioEngine {
-                engine.inputNode.removeTap(onBus: 0)
+            if let engineAtStop {
+                if audioEngine === engineAtStop {
+                    tapProxy = nil
+                }
+                engineAtStop.inputNode.removeTap(onBus: 0)
                 logger.debug("[FluidAudio] Audio tap removed")
             }
 
@@ -561,22 +611,25 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             if let proxy {
                 await proxy.waitForPendingTasks()
             }
+            resetSpeechActivityTracking()
 
-            let finalChunkSampleCount = await self.chunkedRecordingManager.getCurrentBufferSize()
-            await self.chunkedRecordingManager.forceChunkBoundary()
+            let finalChunkSampleCount = await chunkedRecordingManager.getCurrentBufferSize()
+            await chunkedRecordingManager.forceChunkBoundary()
 
             // Step 4: NOW clean up audio engine safely (all audio has been processed)
             logger.debug("[FluidAudio] Cleaning up audio engine...")
-            if let engine = self.audioEngine, engine.isRunning {
-                engine.stop()
+            if let engineAtStop, engineAtStop.isRunning {
+                engineAtStop.stop()
             }
-            self.audioEngine = nil
+            if audioEngine === engineAtStop {
+                audioEngine = nil
+            }
 
             // Note: On macOS, we don't need to manually deactivate audio sessions
             // The system automatically manages audio resources when the engine stops
 
             // Step 5: Finalize chunked recording and get complete transcription
-            await self.finalizeChunkedTranscription(
+            await finalizeChunkedTranscription(
                 diagnostics: StopFinalizationDiagnostics(
                     stopRequestedAt: stopRequestedAt,
                     timeSinceLastSpeechAtStop: stopDecision.timeSinceLastSpeechAtStop,
@@ -822,12 +875,12 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         }
     }
 
-    private func stopSilenceDetectionTimer() {
+    private func stopSilenceDetectionTimer(resetSpeechActivity: Bool = true) {
         silenceDetectionTimer?.invalidate()
         silenceDetectionTimer = nil
-        hasDetectedSpeechInCurrentSession = false
-        lastStrongSpeechDetectedAt = nil
-        lastSpeechActivityAt = nil
+        if resetSpeechActivity {
+            resetSpeechActivityTracking()
+        }
     }
 
     // Removed silence buffer injection - it was causing buffer corruption
