@@ -106,7 +106,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     // Reference to AppState for silence timeout configuration
     private weak var appState: AppState?
     private var hasDetectedSpeechInCurrentSession = false
-    private var lastSpeechDetectedAt: Date?
+    private var lastStrongSpeechDetectedAt: Date?
+    private var lastSpeechActivityAt: Date?
 
     /// Check if models are ready for transcription (loaded in memory)
     public var isModelsReady: Bool {
@@ -389,7 +390,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             }
             userInitiatedStop = false
             hasDetectedSpeechInCurrentSession = false
-            lastSpeechDetectedAt = nil
+            lastStrongSpeechDetectedAt = nil
+            lastSpeechActivityAt = nil
         }
 
         // Clear UI transcription for fresh start
@@ -495,7 +497,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         let stopDecision = RecordingStopFinalizationPolicy.resolve(
             RecordingStopFinalizationInput(
                 stopRequestedAt: stopRequestedAt,
-                lastSpeechDetectedAt: lastSpeechDetectedAt,
+                // Use any accepted trailing speech activity here, not just strong peaks.
+                lastSpeechDetectedAt: lastSpeechActivityAt,
                 minimumFlushDelay: trailingBufferDelay,
                 requiredSpeechTailGap: requiredSpeechTailGap,
                 maximumFlushDelay: maximumTrailingBufferDelay
@@ -591,19 +594,25 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         let now = Date()
         let hasStrongSpeechSignal = computedRms > silenceThreshold || peakAmplitude > peakSpeechThreshold
         let hasWeakSpeechSignal = computedRms > lowSignalThreshold || peakAmplitude > (peakSpeechThreshold * 0.6)
+        let speechActivityDecision = SpeechActivityPolicy.resolve(
+            SpeechActivityInput(
+                hasStrongSpeechSignal: hasStrongSpeechSignal,
+                hasWeakSpeechSignal: hasWeakSpeechSignal,
+                observedAt: now,
+                lastStrongSpeechDetectedAt: lastStrongSpeechDetectedAt,
+                speechHangoverDuration: speechHangoverDuration
+            )
+        )
+        let hasAudioActivity = speechActivityDecision.hasAudioActivity
 
-        let hasAudioActivity: Bool
-        if hasStrongSpeechSignal {
-            hasAudioActivity = true
-            lastSpeechDetectedAt = now
-        } else if let lastSpeechDetectedAt,
-                  now.timeIntervalSince(lastSpeechDetectedAt) <= speechHangoverDuration,
-                  hasWeakSpeechSignal
-        {
-            // Hangover window prevents cutting off at brief low-volume tails between words.
-            hasAudioActivity = true
-        } else {
-            hasAudioActivity = false
+        if speechActivityDecision.shouldRefreshStrongSpeechAnchor {
+            lastStrongSpeechDetectedAt = now
+        }
+
+        if speechActivityDecision.shouldRefreshStopFinalizationAnchor {
+            // Keep a separate stop anchor so weak trailing syllables extend finalization
+            // without letting the hangover gate self-sustain on persistent low-level noise.
+            lastSpeechActivityAt = now
         }
 
         await updateAudioLevel(rms: computedRms)
@@ -817,7 +826,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         silenceDetectionTimer?.invalidate()
         silenceDetectionTimer = nil
         hasDetectedSpeechInCurrentSession = false
-        lastSpeechDetectedAt = nil
+        lastStrongSpeechDetectedAt = nil
+        lastSpeechActivityAt = nil
     }
 
     // Removed silence buffer injection - it was causing buffer corruption
