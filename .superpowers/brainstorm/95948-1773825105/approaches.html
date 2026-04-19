@@ -1,0 +1,107 @@
+<h2>Architecture Approach</h2>
+<p class="subtitle">How should meeting recording and the Library integrate into Flowstay's existing module structure?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>New SPM Module: FlowstayMeetings</h3>
+      <p><strong>Recommended.</strong> Clean separation of concerns with a dedicated module.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Module Architecture</div>
+        <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.6;">
+<pre style="margin:0; white-space: pre;">
+Package.swift
+├── Flowstay          (app entry point)
+├── FlowstayCore      (existing: dictation, personas, AI providers)
+├── FlowstayUI        (existing: menu bar, settings, overlay)
+├── FlowstayPermissions (existing: onboarding)
+│
+├── FlowstayMeetings  ← NEW MODULE
+│   ├── Audio/
+│   │   ├── SystemAudioCapture    (ScreenCaptureKit)
+│   │   ├── MicrophoneCapture     (AVAudioEngine)
+│   │   └── AudioMixer            (combines both streams)
+│   ├── Detection/
+│   │   ├── MeetingAppDetector    (NSWorkspace observation)
+│   │   └── MeetingSession        (lifecycle management)
+│   ├── Transcription/
+│   │   ├── MeetingTranscriber    (FluidAudio pipeline)
+│   │   └── SpeakerDiarization    (label who spoke)
+│   ├── Notes/
+│   │   ├── NoteGenerator         (AI-powered, uses AIProviderProtocol)
+│   │   └── MeetingTemplate       (1:1, Stand-Up, Generic, Custom)
+│   └── Models/
+│       └── SwiftData models
+│
+└── FlowstayLibrary   ← NEW MODULE
+    ├── LibraryWindow         (main window)
+    ├── MeetingDetailView     (transcript + notes)
+    ├── TranscriptionListView (existing history, migrated)
+    └── LibrarySidebar        (navigation)
+</pre>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top: 12px;">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>Clean boundaries — meeting code doesn't bloat FlowstayCore</li>
+          <li>Independent compilation and testing</li>
+          <li>Library window gets its own module for future expansion (chat, screenshots)</li>
+          <li>Reuses AIProviderProtocol from FlowstayCore</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>More SPM modules to manage</li>
+          <li>Need to define clean interfaces between modules</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Extend Existing Modules</h3>
+      <p>Add meeting features directly into FlowstayCore and FlowstayUI.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Module Architecture</div>
+        <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.6;">
+<pre style="margin:0; white-space: pre;">
+Package.swift
+├── Flowstay          (app entry point)
+├── FlowstayCore      (extended)
+│   ├── ... existing code ...
+│   ├── Meetings/           ← NEW DIRECTORY
+│   │   ├── SystemAudioCapture
+│   │   ├── MeetingAppDetector
+│   │   ├── MeetingTranscriber
+│   │   ├── NoteGenerator
+│   │   └── MeetingTemplate
+│   └── Storage/            ← NEW DIRECTORY
+│       └── SwiftData models
+│
+├── FlowstayUI        (extended)
+│   ├── ... existing views ...
+│   └── Library/            ← NEW DIRECTORY
+│       ├── LibraryWindow
+│       ├── MeetingDetailView
+│       └── LibrarySidebar
+│
+└── FlowstayPermissions (existing)
+</pre>
+        </div>
+      </div>
+      <div class="pros-cons" style="margin-top: 12px;">
+        <div class="pros"><h4>Pros</h4><ul>
+          <li>Fewer modules, simpler dependency graph</li>
+          <li>Direct access to existing services (AppState, etc.)</li>
+          <li>Faster to get started</li>
+        </ul></div>
+        <div class="cons"><h4>Cons</h4><ul>
+          <li>FlowstayCore grows significantly — mixing dictation and meetings</li>
+          <li>Harder to reason about boundaries as features grow</li>
+          <li>All of Core recompiles when meeting code changes</li>
+        </ul></div>
+      </div>
+    </div>
+  </div>
+</div>

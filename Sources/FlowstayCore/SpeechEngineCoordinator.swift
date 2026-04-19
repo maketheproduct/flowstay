@@ -301,6 +301,17 @@ public class EngineCoordinatorViewModel: ObservableObject, @unchecked Sendable {
         await stopCallback?()
     }
 
+    @MainActor
+    public func shutdown() {
+        modelPreparationTask?.cancel()
+        modelPreparationTask = nil
+        recordingPipelinePrewarmTask?.cancel()
+        recordingPipelinePrewarmTask = nil
+        fluidAudioSpeechRecognition?.shutdown()
+        isRecording = false
+        isTransitioningRecordingState = false
+    }
+
     /// FluidAudio is the only engine, so no switching needed
     /// This method is kept for compatibility but does nothing
     @MainActor

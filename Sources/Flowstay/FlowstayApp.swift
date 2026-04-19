@@ -120,8 +120,10 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
 
     nonisolated func applicationWillTerminate(_ notification: Notification) {
         _ = notification
-
-        Task { @MainActor [weak self] in
+        // AppKit delivers NSApplicationDelegate termination callbacks on the main thread.
+        // `applicationWillTerminate(_:)` is not formally annotated `@MainActor`, so we
+        // rely on that runtime contract before touching main-actor state here.
+        MainActor.assumeIsolated { [weak self] in
             self?.handleApplicationWillTerminate()
         }
     }
@@ -213,6 +215,10 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         hotkeyWarmupTask = nil
         hotkeyStartupFeedbackTask?.cancel()
         hotkeyStartupFeedbackTask = nil
+        engineCoordinator?.shutdown()
+        GlobalShortcutsManager.deinitialize()
+        permissionManager?.cleanup()
+        initService?.cleanup()
         if let button = statusItem?.button {
             button.target = nil
             button.action = nil

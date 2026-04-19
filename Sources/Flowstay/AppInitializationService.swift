@@ -41,12 +41,19 @@ class AppInitializationService: ObservableObject {
     private let appState: AppState
     private let engineCoordinator: EngineCoordinatorViewModel
     private let callbacks = AppInitializationCallbacks()
-    private var prewarmTask: Task<Void, Never>?
-    private var deferredOnboardingResumeTask: Task<Void, Never>?
+    /// SAFETY: task creation/cancellation remains main-actor owned.
+    /// These references are `nonisolated(unsafe)` only so `deinit` can cancel them
+    /// synchronously under strict concurrency without scheduling more work.
+    private nonisolated(unsafe) var prewarmTask: Task<Void, Never>?
+    /// SAFETY: same as `prewarmTask`.
+    private nonisolated(unsafe) var deferredOnboardingResumeTask: Task<Void, Never>?
 
     @Published var hasInitialized = false
 
-    private var notificationObserver: NSObjectProtocol?
+    /// SAFETY: observer registration/removal is still performed on the main actor.
+    /// This is marked `nonisolated(unsafe)` only so deinit can clear the token
+    /// synchronously without scheduling more work.
+    private nonisolated(unsafe) var notificationObserver: NSObjectProtocol?
 
     init(
         permissionManager: PermissionManager,
@@ -72,21 +79,26 @@ class AppInitializationService: ObservableObject {
     }
 
     deinit {
-        cleanup()
+        if let observer = notificationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            notificationObserver = nil
+        }
+        prewarmTask?.cancel()
+        prewarmTask = nil
+        deferredOnboardingResumeTask?.cancel()
+        deferredOnboardingResumeTask = nil
     }
 
     /// Clean up resources when done
-    nonisolated func cleanup() {
-        Task { @MainActor in
-            if let observer = notificationObserver {
-                NotificationCenter.default.removeObserver(observer)
-                notificationObserver = nil
-            }
-            prewarmTask?.cancel()
-            prewarmTask = nil
-            deferredOnboardingResumeTask?.cancel()
-            deferredOnboardingResumeTask = nil
+    func cleanup() {
+        if let observer = notificationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            notificationObserver = nil
         }
+        prewarmTask?.cancel()
+        prewarmTask = nil
+        deferredOnboardingResumeTask?.cancel()
+        deferredOnboardingResumeTask = nil
     }
 
     /// Set the onboarding callback after initialization
