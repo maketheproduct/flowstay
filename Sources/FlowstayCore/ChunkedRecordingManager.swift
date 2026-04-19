@@ -71,8 +71,9 @@ public actor ChunkedRecordingManager {
 
     /// Reference to ASR manager for transcription
     /// SAFETY: nonisolated(unsafe) because AsrManager doesn't conform to Sendable.
-    /// Thread safety is guaranteed by actor isolation - all access to this property
-    /// happens within ChunkedRecordingManager actor's serialized execution context.
+    /// The reference is only read from actor-isolated methods and is never shared
+    /// directly with detached work except through `UnsafeAsrManagerBox` in
+    /// `transcribeWithTimeout`, which preserves the single-request-at-a-time invariant.
     private nonisolated(unsafe) weak var asrManager: AsrManager?
 
     /// Metrics for this recording session

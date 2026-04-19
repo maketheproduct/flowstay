@@ -1,0 +1,118 @@
+<h2>Library Window Layout</h2>
+<p class="subtitle">The central hub for meetings, transcriptions, and notes</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Sidebar + Detail (macOS native feel)</h3>
+      <p>NavigationSplitView with sidebar categories and detail pane. Matches Apple's Mail/Notes/Finder pattern.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Library Window — Sidebar Layout</div>
+        <div class="mockup-body" style="font-family: monospace; font-size: 11px; line-height: 1.4; background: #1a1a2e;">
+<pre style="margin:0; white-space:pre; color: #e0e0e0;">
+┌─────────────────────────────────────────────────────────────────────┐
+│  ◉ ◉ ◉   Flowstay Library                              🔍 Search  │
+├──────────────────┬──────────────────────────────────────────────────┤
+│                  │                                                  │
+│  📋 ALL ITEMS    │  ┌──────────────────────────────────────────┐   │
+│                  │  │ 🎙 Product Sync — Zoom           2h 14m │   │
+│  MEETINGS        │  │ Today, 2:00 PM                          │   │
+│   📅 Today    3  │  │                                         │   │
+│   📅 This Week 8 │  │ ┌─────────────────────────────────────┐ │   │
+│   📅 Earlier  42 │  │ │ TRANSCRIPT            NOTES    📋   │ │   │
+│                  │  │ ├─────────────────────────────────────┤ │   │
+│  DICTATIONS      │  │ │                                     │ │   │
+│   🎤 Recent  12  │  │ │ 👤 You (0:00)                      │ │   │
+│   🎤 All    156  │  │ │ Let's start with the Q1 roadmap    │ │   │
+│                  │  │ │ update. Where are we on the new     │ │   │
+│  ─────────────── │  │ │ onboarding flow?                    │ │   │
+│                  │  │ │                                     │ │   │
+│  TEMPLATES       │  │ │ 👥 Remote (0:32)                   │ │   │
+│   📝 Generic     │  │ │ The design is finalized. We're      │ │   │
+│   📝 1:1         │  │ │ waiting on the API changes from     │ │   │
+│   📝 Stand-Up    │  │ │ backend team, should be done by     │ │   │
+│   📝 Customer    │  │ │ Thursday.                           │ │   │
+│   📝 Interview   │  │ │                                     │ │   │
+│   + New Template │  │ │ 👤 You (1:05)                      │ │   │
+│                  │  │ │ Great. What about the migration     │ │   │
+│  ─────────────── │  │ │ script? That was flagged last week. │ │   │
+│                  │  │ │                                     │ │   │
+│  ⚙️ Settings     │  │ │ 👥 Remote (1:22)                   │ │   │
+│                  │  │ │ Done and tested. PR is up for       │ │   │
+│                  │  │ │ review, just needs your sign-off.   │ │   │
+│                  │  │ └─────────────────────────────────────┘ │   │
+│                  │  │                                         │   │
+│                  │  │  ▶️ Play Audio  ⏱ 2:14:32   🔄 Regen   │   │
+│                  │  └──────────────────────────────────────────┘   │
+│                  │                                                  │
+│                  │  ┌──────────────────────────────────────────┐   │
+│                  │  │ 🎙 Sprint Planning — Teams       1h 02m │   │
+│                  │  │ Today, 10:00 AM                         │   │
+│                  │  └──────────────────────────────────────────┘   │
+│                  │                                                  │
+│                  │  ┌──────────────────────────────────────────┐   │
+│                  │  │ 🎤 Email draft — dictation        0:42  │   │
+│                  │  │ Today, 9:15 AM                          │   │
+│                  │  └──────────────────────────────────────────┘   │
+└──────────────────┴──────────────────────────────────────────────────┘
+</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Timeline + Drawer (chronological focus)</h3>
+      <p>Everything in one chronological stream. Click to expand details in a slide-out drawer. More like a feed.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Library Window — Timeline Layout</div>
+        <div class="mockup-body" style="font-family: monospace; font-size: 11px; line-height: 1.4; background: #1a1a2e;">
+<pre style="margin:0; white-space:pre; color: #e0e0e0;">
+┌─────────────────────────────────────────────────────────────────────┐
+│  ◉ ◉ ◉   Flowstay Library            🔍 Search   Filter ▾  All ▾ │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  TODAY                                                              │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │ 🎙  Product Sync — Zoom                          2h 14m      │ │
+│  │ 2:00 PM · Template: 1:1 · 3 action items                     │ │
+│  │                                                                │ │
+│  │ Key decisions: Approved Q1 roadmap. Migration script ready    │ │
+│  │ for review. Onboarding flow blocked on backend API...         │ │
+│  │                                                    View →     │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │ 🎙  Sprint Planning — Teams                      1h 02m      │ │
+│  │ 10:00 AM · Template: Stand-Up · 5 action items               │ │
+│  │                                                                │ │
+│  │ Sprint velocity on track. Two stories carried over from       │ │
+│  │ last sprint. New hire onboarding task added...                │ │
+│  │                                                    View →     │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │ 🎤  Email draft — dictation                         0:42     │ │
+│  │ 9:15 AM · Persona: Professional                               │ │
+│  │                                                                │ │
+│  │ "Hi team, following up on yesterday's discussion about the    │ │
+│  │ deployment timeline..."                                       │ │
+│  │                                                    View →     │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│  YESTERDAY                                                          │
+│  ┌────────────────────────────────────────────────────────────────┐ │
+│  │ 🎙  Customer Call — Zoom                          0h 45m     │ │
+│  │ 3:30 PM · Template: Customer Discovery · 2 pain points       │ │
+│  └────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
