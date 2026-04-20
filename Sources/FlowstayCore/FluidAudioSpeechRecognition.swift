@@ -911,6 +911,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         }
     }
 
+    // swiftlint:disable function_body_length
     /// Pre-warm audio hardware and converter pipeline so first hotkey press
     /// doesn't pay the full cold-start penalty.
     ///
@@ -1053,7 +1054,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             return false
         }
     }
-
+    // swiftlint:enable function_body_length
+    // swiftlint:disable function_body_length
     public func startRecording() async throws {
         guard !isShuttingDown else {
             throw FluidAudioInternalError.shuttingDown
@@ -1263,6 +1265,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // so future edits cannot accidentally fall through without starting recording.
         throw FluidAudioError.microphoneSetupFailed
     }
+    // swiftlint:enable function_body_length
 
     public func stopRecording() {
         logger.info("[FluidAudioSpeechRecognition] Stopping recording...")
@@ -1762,9 +1765,11 @@ final class FluidAudioTapProxy: @unchecked Sendable {
         )
 #if DEBUG
         if shouldLogTapMetrics {
+            // swiftlint:disable line_length
             logger.debug(
                 "[FluidAudioTapProxy] Tap #\(currentTapCount, privacy: .public): allocating \(frameCapacity, privacy: .public) output frames for \(buffer.frameLength, privacy: .public) input frames at \(buffer.format.sampleRate, privacy: .public)Hz -> \(self.outputFormat.sampleRate, privacy: .public)Hz"
             )
+            // swiftlint:enable line_length
         }
 #endif
         guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frameCapacity) else {
