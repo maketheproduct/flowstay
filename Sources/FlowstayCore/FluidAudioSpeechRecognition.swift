@@ -1774,11 +1774,13 @@ final class FluidAudioTapProxy: @unchecked Sendable {
         )
         #if DEBUG
             if shouldLogTapMetrics {
+                // swiftformat:disable redundantSelf
                 // swiftlint:disable line_length
                 logger.debug(
-                    "[FluidAudioTapProxy] Tap #\(currentTapCount, privacy: .public): allocating \(frameCapacity, privacy: .public) output frames for \(buffer.frameLength, privacy: .public) input frames at \(buffer.format.sampleRate, privacy: .public)Hz -> \(outputFormat.sampleRate, privacy: .public)Hz"
+                    "[FluidAudioTapProxy] Tap #\(currentTapCount, privacy: .public): allocating \(frameCapacity, privacy: .public) output frames for \(buffer.frameLength, privacy: .public) input frames at \(buffer.format.sampleRate, privacy: .public)Hz -> \(self.outputFormat.sampleRate, privacy: .public)Hz"
                 )
                 // swiftlint:enable line_length
+                // swiftformat:enable redundantSelf
             }
         #endif
         guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frameCapacity) else {
