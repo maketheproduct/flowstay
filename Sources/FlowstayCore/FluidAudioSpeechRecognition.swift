@@ -311,6 +311,38 @@ extension FluidAudioError: LocalizedError {
     }
 }
 
+private enum FluidAudioInternalError: LocalizedError {
+    case modelDownloadFailed(attempts: Int)
+    case loadedModelsUnavailable
+    case downloadedModelsUnavailable
+    case shuttingDown
+    case asrUnavailable
+    case audioEngineCreationFailed
+    case audioEngineRecreationFailed
+    case startupTimedOut
+
+    var errorDescription: String? {
+        switch self {
+        case let .modelDownloadFailed(attempts):
+            "Failed to download models after \(attempts) attempts."
+        case .loadedModelsUnavailable:
+            "Models loaded but were unexpectedly unavailable."
+        case .downloadedModelsUnavailable:
+            "Models downloaded but were unexpectedly unavailable."
+        case .shuttingDown:
+            "Speech recognition is shutting down."
+        case .asrUnavailable:
+            "FluidAudio ASR not available. Models may need to be downloaded."
+        case .audioEngineCreationFailed:
+            "Failed to create audio engine."
+        case .audioEngineRecreationFailed:
+            "Failed to recreate audio engine after forced prewarm."
+        case .startupTimedOut:
+            "Timed out waiting for audio from the selected input device. Try reconnecting the device and starting recording again."
+        }
+    }
+}
+
 /// FluidAudio-based Speech Recognition using Parakeet TDT ASR
 /// Provides fast, accurate, local speech recognition with better real-time performance than Whisper
 @MainActor
@@ -817,11 +849,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         }
 
         // If all retries failed, throw the last error
-        throw lastError ?? NSError(
-            domain: "FluidAudioSpeechRecognition",
-            code: -1,
-            userInfo: [NSLocalizedDescriptionKey: "Failed to download models after \(maxRetries) attempts"]
-        )
+        throw lastError ?? FluidAudioInternalError.modelDownloadFailed(attempts: maxRetries)
     }
 
     /// Fast-path: Load models if they already exist on disk (no download)
@@ -833,11 +861,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             models = try await AsrModels.loadFromCache()
 
             guard let loadedModels = models else {
-                throw NSError(
-                    domain: "FluidAudioSpeechRecognition",
-                    code: -1,
-                    userInfo: [NSLocalizedDescriptionKey: "Models loaded but unexpectedly nil"]
-                )
+                throw FluidAudioInternalError.loadedModelsUnavailable
             }
 
             // Initialize ASR manager with optimized config for better accuracy
@@ -867,11 +891,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             models = try await downloadModelsWithRetry()
 
             guard let downloadedModels = models else {
-                throw NSError(
-                    domain: "FluidAudioSpeechRecognition",
-                    code: -2,
-                    userInfo: [NSLocalizedDescriptionKey: "Models downloaded but unexpectedly nil"]
-                )
+                throw FluidAudioInternalError.downloadedModelsUnavailable
             }
 
             // Initialize ASR manager with optimized config for better accuracy
@@ -1036,11 +1056,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
     public func startRecording() async throws {
         guard !isShuttingDown else {
-            throw NSError(
-                domain: "FluidAudioSpeechRecognition",
-                code: 4,
-                userInfo: [NSLocalizedDescriptionKey: "Speech recognition is shutting down."]
-            )
+            throw FluidAudioInternalError.shuttingDown
         }
 
         // Initialize FluidAudio if not already done
@@ -1049,11 +1065,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         }
 
         guard asrManager != nil else {
-            throw NSError(
-                domain: "FluidAudioSpeechRecognition",
-                code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "FluidAudio ASR not available. Models may need to be downloaded."]
-            )
+            throw FluidAudioInternalError.asrUnavailable
         }
 
         // Ensure we're not already recording
@@ -1090,11 +1102,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             audioEngine = AVAudioEngine()
 
             guard let audioEngine else {
-                throw NSError(
-                    domain: "FluidAudioSpeechRecognition",
-                    code: 2,
-                    userInfo: [NSLocalizedDescriptionKey: "Failed to create audio engine"]
-                )
+                throw FluidAudioInternalError.audioEngineCreationFailed
             }
             var recordingEngine = audioEngine
 
@@ -1134,11 +1142,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                     self.audioEngine = AVAudioEngine()
 
                     guard let refreshedAudioEngine = self.audioEngine else {
-                        throw NSError(
-                            domain: "FluidAudioSpeechRecognition",
-                            code: 2,
-                            userInfo: [NSLocalizedDescriptionKey: "Failed to recreate audio engine after forced prewarm"]
-                        )
+                        throw FluidAudioInternalError.audioEngineRecreationFailed
                     }
 
                     recordingEngine = refreshedAudioEngine
@@ -1244,13 +1248,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                     completedAttempts: startupAttempt,
                     maximumAttempts: maximumRecordingStartupAttempts
                 ) else {
-                    throw NSError(
-                        domain: "FluidAudioSpeechRecognition",
-                        code: 3,
-                        userInfo: [
-                            NSLocalizedDescriptionKey: "Timed out waiting for audio from the selected input device. Try reconnecting the device and starting recording again."
-                        ]
-                    )
+                    throw FluidAudioInternalError.startupTimedOut
                 }
 
                 logger.info("[FluidAudioSpeechRecognition] Retrying recording startup after initial buffer timeout")
@@ -1383,6 +1381,10 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     }
 
     fileprivate func applyProcessedAudioResult(_ result: AudioBufferProcessingResult) {
+        guard !isShuttingDown else {
+            return
+        }
+
         if result.didDetectSpeechTransition {
             logger.info("[FluidAudioSpeechRecognition] First speech detected - starting silence timeout tracking")
         }

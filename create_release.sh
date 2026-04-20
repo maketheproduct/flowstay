@@ -78,6 +78,7 @@ build_styled_dmg() {
     local volume_name="$3"
     local developer_id="$4"
     local background_image="$5"
+    local temp_dir
     local temp_dmg
     local mounted_device
     local app_size_mb
@@ -85,7 +86,9 @@ build_styled_dmg() {
 
     app_size_mb=$(du -sm "$app_path" | awk '{print $1}')
     dmg_size_mb=$((app_size_mb + 80))
-    temp_dmg=$(mktemp -u "/tmp/flowstay-release.XXXXXX.dmg")
+    temp_dir=$(mktemp -d "/tmp/flowstay-release.XXXXXX")
+    temp_dmg="$temp_dir/${dmg_name%.dmg}-temp.dmg"
+    trap 'rm -rf "$temp_dir"' RETURN
 
     hdiutil create \
         -srcfolder "$app_path" \
@@ -126,8 +129,6 @@ build_styled_dmg() {
         -format UDZO \
         -imagekey zlib-level=9 \
         -o "$dmg_name" >/dev/null
-
-    rm -f "$temp_dmg"
 
     codesign --force --sign "$developer_id" "$dmg_name" >/dev/null
 }
