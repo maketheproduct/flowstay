@@ -1,14 +1,14 @@
-@testable import FlowstayCore
 import AVFoundation
 import CoreAudio
+@testable import FlowstayCore
 import XCTest
 
 final class FluidAudioCaptureReliabilityTests: XCTestCase {
     func testConvertedOutputFrameCapacityUsesCeilFor48kTo16k() {
         let capacity = convertedOutputFrameCapacity(
             inputFrameCount: 1024,
-            inputSampleRate: 48_000,
-            outputSampleRate: 16_000
+            inputSampleRate: 48000,
+            outputSampleRate: 16000
         )
 
         XCTAssertEqual(capacity, 342)
@@ -17,8 +17,8 @@ final class FluidAudioCaptureReliabilityTests: XCTestCase {
     func testConvertedOutputFrameCapacityUsesCeilFor44100To16k() {
         let capacity = convertedOutputFrameCapacity(
             inputFrameCount: 1024,
-            inputSampleRate: 44_100,
-            outputSampleRate: 16_000
+            inputSampleRate: 44100,
+            outputSampleRate: 16000
         )
 
         XCTAssertEqual(capacity, 372)
@@ -27,7 +27,7 @@ final class FluidAudioCaptureReliabilityTests: XCTestCase {
     func testWarmStateIsValidOnlyWhenSnapshotMatchesAndBufferWasReceived() {
         let snapshot = DefaultInputSnapshot(
             deviceID: AudioDeviceID(101),
-            sampleRate: 48_000,
+            sampleRate: 48000,
             channelCount: 1
         )
         let warmState = RecordingPipelineWarmState(
@@ -41,7 +41,7 @@ final class FluidAudioCaptureReliabilityTests: XCTestCase {
             warmState.isValid(
                 for: DefaultInputSnapshot(
                     deviceID: snapshot.deviceID,
-                    sampleRate: 44_100,
+                    sampleRate: 44100,
                     channelCount: snapshot.channelCount
                 )
             )
@@ -76,7 +76,7 @@ final class FluidAudioCaptureReliabilityTests: XCTestCase {
     func testShouldForceRecordingPipelinePrewarmWhenWarmStateIsMissingOrInvalid() {
         let snapshot = DefaultInputSnapshot(
             deviceID: AudioDeviceID(303),
-            sampleRate: 48_000,
+            sampleRate: 48000,
             channelCount: 1
         )
 
@@ -115,7 +115,7 @@ final class FluidAudioCaptureReliabilityTests: XCTestCase {
     func testShouldForceRecordingPipelinePrewarmWhenWarmStateHasExpired() {
         let snapshot = DefaultInputSnapshot(
             deviceID: AudioDeviceID(404),
-            sampleRate: 48_000,
+            sampleRate: 48000,
             channelCount: 1
         )
         let staleWarmState = RecordingPipelineWarmState(
