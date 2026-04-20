@@ -12,13 +12,13 @@ private final class TranscriptionCompletionSink {
 
 private let recordingPipelineWarmStateValidityDuration: TimeInterval = 300
 
-struct DefaultInputSnapshot: Equatable, Sendable {
+struct DefaultInputSnapshot: Equatable {
     let deviceID: AudioDeviceID
     let sampleRate: Double
     let channelCount: AVAudioChannelCount
 }
 
-struct RecordingPipelineWarmState: Equatable, Sendable {
+struct RecordingPipelineWarmState: Equatable {
     let snapshot: DefaultInputSnapshot
     let didReceiveConvertedBuffer: Bool
     let completedAt: Date
@@ -89,12 +89,12 @@ private final class PrewarmObservationState: @unchecked Sendable {
     }
 }
 
-private struct AudioVisualizationUpdate: Sendable {
+private struct AudioVisualizationUpdate {
     let audioLevel: Float
     let waveformSamples: [Float]
 }
 
-private struct AudioBufferProcessingResult: Sendable {
+private struct AudioBufferProcessingResult {
     let hasAudioActivity: Bool
     let didDetectSpeechTransition: Bool
     let visualizationUpdate: AudioVisualizationUpdate?
@@ -104,7 +104,7 @@ private struct AudioBufferProcessingResult: Sendable {
     }
 }
 
-private struct AudioProcessingSnapshot: Sendable {
+private struct AudioProcessingSnapshot {
     let lastSpeechDetectedAt: Date?
 }
 
@@ -281,7 +281,7 @@ private actor FluidAudioBufferProcessor {
     }
 }
 
-enum FlushResult: Sendable {
+enum FlushResult {
     case completed
     case iterationCapHit(iterations: Int)
     case timeLimitHit(elapsed: TimeInterval, iterations: Int)
@@ -1018,9 +1018,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
             if didReceiveConvertedBuffer {
                 if let snapshot {
+                    // swiftformat:disable redundantSelf
                     logger.info(
-                        "[FluidAudioSpeechRecognition] Recording pipeline pre-warmed for \(describe(snapshot: snapshot), privacy: .public)"
+                        "[FluidAudioSpeechRecognition] Recording pipeline pre-warmed for \(self.describe(snapshot: snapshot), privacy: .public)"
                     )
+                    // swiftformat:enable redundantSelf
                 } else {
                     logger.info("[FluidAudioSpeechRecognition] Recording pipeline pre-warmed")
                 }
@@ -1028,9 +1030,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             }
 
             if let snapshot {
+                // swiftformat:disable redundantSelf
                 logger.warning(
-                    "[FluidAudioSpeechRecognition] Pre-warm timed out before first converted buffer for \(describe(snapshot: snapshot), privacy: .public)"
+                    "[FluidAudioSpeechRecognition] Pre-warm timed out before first converted buffer for \(self.describe(snapshot: snapshot), privacy: .public)"
                 )
+                // swiftformat:enable redundantSelf
             } else {
                 logger.warning("[FluidAudioSpeechRecognition] Pre-warm timed out before first converted buffer")
             }
@@ -1131,9 +1135,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                        warmState: recordingPipelineWarmState
                    )
                 {
+                    // swiftformat:disable redundantSelf
                     logger.info(
-                        "[FluidAudioSpeechRecognition] Warm state missing or stale for \(describe(snapshot: currentSnapshot), privacy: .public); forcing prewarm before recording"
+                        "[FluidAudioSpeechRecognition] Warm state missing or stale for \(self.describe(snapshot: currentSnapshot), privacy: .public); forcing prewarm before recording"
                     )
+                    // swiftformat:enable redundantSelf
 
                     cleanupAudioEngine()
                     let didPrewarm = await prewarmRecordingPipeline()
@@ -1241,9 +1247,11 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                     return
                 }
 
+                // swiftformat:disable redundantSelf
                 logger.warning(
-                    "[FluidAudioSpeechRecognition] No converted audio received within \(recordingStartupConvertedBufferTimeout, privacy: .public)s on startup attempt \(startupAttempt, privacy: .public)"
+                    "[FluidAudioSpeechRecognition] No converted audio received within \(self.recordingStartupConvertedBufferTimeout, privacy: .public)s on startup attempt \(startupAttempt, privacy: .public)"
                 )
+                // swiftformat:enable redundantSelf
                 await cleanupAttemptIfNeeded()
 
                 guard shouldRetryRecordingStartupAfterInitialBufferTimeout(
