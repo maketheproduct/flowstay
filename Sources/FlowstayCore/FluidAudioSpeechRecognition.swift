@@ -378,7 +378,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     /// Safety watchdog task — cancelled when real completion fires
     private var safetyWatchdogTask: Task<Void, Never>?
 
-    // FluidAudio components - nonisolated(unsafe) because AsrManager/AsrModels aren't Sendable
+    /// FluidAudio components - nonisolated(unsafe) because AsrManager/AsrModels aren't Sendable
     /// SAFETY: nonisolated(unsafe) for AsrManager/AsrModels because they don't conform to Sendable.
     /// Thread safety is guaranteed by MainActor isolation - all access to these properties
     /// happens on the main thread through the @MainActor-isolated class.
@@ -438,7 +438,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     /// Silence detection timer
     private var silenceDetectionTimer: Timer?
 
-    // Reference to AppState for silence timeout configuration
+    /// Reference to AppState for silence timeout configuration
     private weak var appState: AppState?
 
     /// Check if models are ready for transcription (loaded in memory)
@@ -648,11 +648,10 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         backgroundRewarmTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let didPrewarm = await prewarmRecordingPipeline()
-            let status: String
-            if Task.isCancelled {
-                status = "cancelled"
+            let status: String = if Task.isCancelled {
+                "cancelled"
             } else {
-                status = didPrewarm ? "completed" : "failed"
+                didPrewarm ? "completed" : "failed"
             }
             logger.info("[FluidAudioSpeechRecognition] Background re-prewarm \(status, privacy: .public)")
             backgroundRewarmTask = nil
@@ -1020,7 +1019,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             if didReceiveConvertedBuffer {
                 if let snapshot {
                     logger.info(
-                        "[FluidAudioSpeechRecognition] Recording pipeline pre-warmed for \(self.describe(snapshot: snapshot), privacy: .public)"
+                        "[FluidAudioSpeechRecognition] Recording pipeline pre-warmed for \(describe(snapshot: snapshot), privacy: .public)"
                     )
                 } else {
                     logger.info("[FluidAudioSpeechRecognition] Recording pipeline pre-warmed")
@@ -1030,7 +1029,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
             if let snapshot {
                 logger.warning(
-                    "[FluidAudioSpeechRecognition] Pre-warm timed out before first converted buffer for \(self.describe(snapshot: snapshot), privacy: .public)"
+                    "[FluidAudioSpeechRecognition] Pre-warm timed out before first converted buffer for \(describe(snapshot: snapshot), privacy: .public)"
                 )
             } else {
                 logger.warning("[FluidAudioSpeechRecognition] Pre-warm timed out before first converted buffer")
@@ -1054,6 +1053,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             return false
         }
     }
+
     // swiftlint:enable function_body_length
     // swiftlint:disable function_body_length
     public func startRecording() async throws {
@@ -1132,7 +1132,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                    )
                 {
                     logger.info(
-                        "[FluidAudioSpeechRecognition] Warm state missing or stale for \(self.describe(snapshot: currentSnapshot), privacy: .public); forcing prewarm before recording"
+                        "[FluidAudioSpeechRecognition] Warm state missing or stale for \(describe(snapshot: currentSnapshot), privacy: .public); forcing prewarm before recording"
                     )
 
                     cleanupAudioEngine()
@@ -1242,7 +1242,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                 }
 
                 logger.warning(
-                    "[FluidAudioSpeechRecognition] No converted audio received within \(self.recordingStartupConvertedBufferTimeout, privacy: .public)s on startup attempt \(startupAttempt, privacy: .public)"
+                    "[FluidAudioSpeechRecognition] No converted audio received within \(recordingStartupConvertedBufferTimeout, privacy: .public)s on startup attempt \(startupAttempt, privacy: .public)"
                 )
                 await cleanupAttemptIfNeeded()
 
@@ -1265,6 +1265,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // so future edits cannot accidentally fall through without starting recording.
         throw FluidAudioError.microphoneSetupFailed
     }
+
     // swiftlint:enable function_body_length
 
     public func stopRecording() {
@@ -1585,7 +1586,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
         self.audioBufferProcessor = audioBufferProcessor
         self.outputFormat = outputFormat
         self.converter = converter
-        self.preferredOutputFrameCapacity = convertedOutputFrameCapacity(
+        preferredOutputFrameCapacity = convertedOutputFrameCapacity(
             inputFrameCount: 1024,
             inputSampleRate: inputFormat.sampleRate,
             outputSampleRate: outputFormat.sampleRate
@@ -1763,15 +1764,15 @@ final class FluidAudioTapProxy: @unchecked Sendable {
             inputSampleRate: buffer.format.sampleRate,
             outputSampleRate: outputFormat.sampleRate
         )
-#if DEBUG
-        if shouldLogTapMetrics {
-            // swiftlint:disable line_length
-            logger.debug(
-                "[FluidAudioTapProxy] Tap #\(currentTapCount, privacy: .public): allocating \(frameCapacity, privacy: .public) output frames for \(buffer.frameLength, privacy: .public) input frames at \(buffer.format.sampleRate, privacy: .public)Hz -> \(self.outputFormat.sampleRate, privacy: .public)Hz"
-            )
-            // swiftlint:enable line_length
-        }
-#endif
+        #if DEBUG
+            if shouldLogTapMetrics {
+                // swiftlint:disable line_length
+                logger.debug(
+                    "[FluidAudioTapProxy] Tap #\(currentTapCount, privacy: .public): allocating \(frameCapacity, privacy: .public) output frames for \(buffer.frameLength, privacy: .public) input frames at \(buffer.format.sampleRate, privacy: .public)Hz -> \(outputFormat.sampleRate, privacy: .public)Hz"
+                )
+                // swiftlint:enable line_length
+            }
+        #endif
         guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frameCapacity) else {
             logger.error("[FluidAudioTapProxy] Failed to create converted buffer")
             return
@@ -1816,7 +1817,7 @@ final class FluidAudioTapProxy: @unchecked Sendable {
                     return
                 }
 
-                continuation.resume(returning: self.performEndOfStreamFlush(
+                continuation.resume(returning: performEndOfStreamFlush(
                     maxIterations: maxIterations,
                     maxDuration: maxDuration
                 ))
