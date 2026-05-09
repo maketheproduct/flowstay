@@ -401,6 +401,7 @@ final actor CoreAudioHALInputCapture: AudioInputCaptureBackend {
             return
         }
         AudioOutputUnitStop(audioUnit)
+        renderBox?.stopAndFlush()
         AudioUnitUninitialize(audioUnit)
         AudioComponentInstanceDispose(audioUnit)
         self.audioUnit = nil
@@ -503,6 +504,18 @@ private func makeHALClientStreamDescription(
 }
 
 private final class CoreAudioHALRenderBox: @unchecked Sendable {
+    private final class BufferSlot: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+        var inUse = false
+
+        init?(format: AVAudioFormat, frameCapacity: AVAudioFrameCount) {
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCapacity) else {
+                return nil
+            }
+            self.buffer = buffer
+        }
+    }
+
     private let audioUnit: AudioUnit
     private let inputFormat: AVAudioFormat
     private let inputBus: UInt32
@@ -511,7 +524,12 @@ private final class CoreAudioHALRenderBox: @unchecked Sendable {
     private let onSamples: @Sendable ([Float]) -> Void
     private let logger = Logger(subsystem: "com.flowstay.app", category: "CoreAudioHALInputCapture")
     private let diagnosticsLock = NSLock()
+    private let bufferPoolLock = NSLock()
+    private let conversionQueue = DispatchQueue(label: "com.flowstay.app.core-audio-hal.conversion", qos: .userInitiated)
+    private let bufferPool: [BufferSlot]
     private var diagnosticsLogged = 0
+    private var droppedBuffers = 0
+    private var isStopping = false
 
     init(
         audioUnit: AudioUnit,
@@ -526,6 +544,17 @@ private final class CoreAudioHALRenderBox: @unchecked Sendable {
         converter = try AudioSampleConverter(inputFormat: inputFormat)
         self.onHALCallback = onHALCallback
         self.onSamples = onSamples
+
+        let maxRenderFrames = AVAudioFrameCount(8192)
+        var slots: [BufferSlot] = []
+        slots.reserveCapacity(8)
+        for _ in 0 ..< 8 {
+            guard let slot = BufferSlot(format: inputFormat, frameCapacity: maxRenderFrames) else {
+                throw AudioCaptureError.converterUnavailable
+            }
+            slots.append(slot)
+        }
+        bufferPool = slots
     }
 
     func render(
@@ -536,12 +565,13 @@ private final class CoreAudioHALRenderBox: @unchecked Sendable {
     ) -> OSStatus {
         onHALCallback()
 
-        guard let inputBuffer = AVAudioPCMBuffer(
-            pcmFormat: inputFormat,
-            frameCapacity: AVAudioFrameCount(frameCount)
-        ) else {
-            return kAudio_ParamError
+        guard let slot = checkoutBuffer(frameCount: frameCount) else {
+            logDiagnostic(
+                "No free preallocated buffer callbackBus=\(busNumber) renderBus=\(inputBus) frames=\(frameCount)"
+            )
+            return noErr
         }
+        let inputBuffer = slot.buffer
         inputBuffer.frameLength = AVAudioFrameCount(frameCount)
 
         let status = AudioUnitRender(
@@ -553,20 +583,53 @@ private final class CoreAudioHALRenderBox: @unchecked Sendable {
             inputBuffer.mutableAudioBufferList
         )
         guard status == noErr else {
+            releaseBuffer(slot)
             logDiagnostic(
                 "AudioUnitRender failed status=\(status) callbackBus=\(busNumber) renderBus=\(inputBus) frames=\(frameCount)"
             )
             return status
         }
 
-        guard let samples = converter.convert(buffer: inputBuffer), !samples.isEmpty else {
-            logDiagnostic(
-                "Converted buffer was empty callbackBus=\(busNumber) renderBus=\(inputBus) frames=\(frameCount) format=\(inputFormat.description)"
-            )
-            return noErr
+        conversionQueue.async { [weak self, slot] in
+            guard let self else { return }
+            defer { self.releaseBuffer(slot) }
+            guard !isStopping else { return }
+            guard let samples = converter.convert(buffer: inputBuffer), !samples.isEmpty else {
+                logDiagnostic(
+                    "Converted buffer was empty callbackBus=\(busNumber) renderBus=\(inputBus) frames=\(frameCount) format=\(inputFormat.description)"
+                )
+                return
+            }
+            onSamples(samples)
         }
-        onSamples(samples)
         return noErr
+    }
+
+    func stopAndFlush() {
+        isStopping = true
+        conversionQueue.sync {
+            let samples = converter.flushEndOfStream()
+            if !samples.isEmpty {
+                onSamples(samples)
+            }
+        }
+    }
+
+    private func checkoutBuffer(frameCount: UInt32) -> BufferSlot? {
+        bufferPoolLock.withLock {
+            guard let slot = bufferPool.first(where: { !$0.inUse && frameCount <= $0.buffer.frameCapacity }) else {
+                droppedBuffers += 1
+                return nil
+            }
+            slot.inUse = true
+            return slot
+        }
+    }
+
+    private func releaseBuffer(_ slot: BufferSlot) {
+        bufferPoolLock.withLock {
+            slot.inUse = false
+        }
     }
 
     private func logDiagnostic(_ message: String) {
@@ -588,6 +651,7 @@ private let coreAudioHALInputRenderCallback: AURenderCallback = { refCon, flags,
 private final class AudioSampleConverter: @unchecked Sendable {
     private let converter: AVAudioConverter
     private let outputFormat: AVAudioFormat
+    private let preferredOutputFrameCapacity: AVAudioFrameCount
     private let lock = NSLock()
 
     init(inputFormat: AVAudioFormat, outputSampleRate: Double = 16000) throws {
@@ -603,6 +667,11 @@ private final class AudioSampleConverter: @unchecked Sendable {
         }
         self.converter = converter
         self.outputFormat = outputFormat
+        preferredOutputFrameCapacity = convertedOutputFrameCapacity(
+            inputFrameCount: 1024,
+            inputSampleRate: inputFormat.sampleRate,
+            outputSampleRate: outputSampleRate
+        )
     }
 
     func convert(buffer: AVAudioPCMBuffer) -> [Float]? {
@@ -611,6 +680,33 @@ private final class AudioSampleConverter: @unchecked Sendable {
             inputSampleRate: buffer.format.sampleRate,
             outputSampleRate: outputFormat.sampleRate
         )
+        return convert(frameCapacity: frameCapacity) { _, outStatus in
+            outStatus.pointee = .haveData
+            return buffer
+        }
+    }
+
+    func flushEndOfStream(maxIterations: Int = 100) -> [Float] {
+        var flushedSamples: [Float] = []
+        for _ in 0 ..< maxIterations {
+            guard let samples = convert(frameCapacity: preferredOutputFrameCapacity, inputBlock: { _, outStatus in
+                outStatus.pointee = .endOfStream
+                return nil
+            }) else {
+                return flushedSamples
+            }
+            guard !samples.isEmpty else {
+                return flushedSamples
+            }
+            flushedSamples.append(contentsOf: samples)
+        }
+        return flushedSamples
+    }
+
+    private func convert(
+        frameCapacity: AVAudioFrameCount,
+        inputBlock: @escaping AVAudioConverterInputBlock
+    ) -> [Float]? {
         guard let convertedBuffer = AVAudioPCMBuffer(
             pcmFormat: outputFormat,
             frameCapacity: frameCapacity
@@ -620,16 +716,13 @@ private final class AudioSampleConverter: @unchecked Sendable {
 
         var error: NSError?
         let status: AVAudioConverterOutputStatus = lock.withLock {
-            converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
-                outStatus.pointee = .haveData
-                return buffer
-            }
+            converter.convert(to: convertedBuffer, error: &error, withInputFrom: inputBlock)
         }
         guard error == nil, status == .haveData || convertedBuffer.frameLength > 0,
               let channelData = convertedBuffer.floatChannelData,
               convertedBuffer.frameLength > 0
         else {
-            return nil
+            return []
         }
 
         return Array(UnsafeBufferPointer(
