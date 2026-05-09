@@ -24,12 +24,12 @@ extension AudioInputCaptureBackend {
     }
 }
 
-enum AudioCaptureBackendKind: String, Sendable {
+enum AudioCaptureBackendKind: String {
     case coreAudioHAL
     case avAudioEngineFallback
 }
 
-enum AudioInputDeviceChangeReason: String, Codable, Sendable {
+enum AudioInputDeviceChangeReason: String, Codable {
     case appStart
     case defaultInputChanged
     case devicesChanged
@@ -39,12 +39,12 @@ enum AudioInputDeviceChangeReason: String, Codable, Sendable {
     case postRecordingPending
 }
 
-struct AudioInputDeviceChangeEvent: Sendable {
+struct AudioInputDeviceChangeEvent {
     let reason: AudioInputDeviceChangeReason
     let snapshot: AudioInputDeviceSnapshot?
 }
 
-struct AudioInputDeviceSnapshot: Equatable, Sendable {
+struct AudioInputDeviceSnapshot: Equatable {
     let deviceID: AudioDeviceID
     let uid: String?
     let name: String?
