@@ -51,6 +51,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private var overlayProcessingTimeoutTask: Task<Void, Never>?
     private var isHotkeyStartPending = false
     private var queuedStartRequest = false
+    private var queuedStartRequestedAt: Date?
     private var isHoldToTalkHotkeyPressed = false
     private var holdToTalkSessionActive = false
     private var stopHoldToTalkAfterTransition = false
@@ -609,9 +610,13 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 guard let self else { return }
                 guard isReady else { return }
                 guard queuedStartRequest else { return }
+                let queuedElapsed = isHoldToTalkHotkeyPressed ? nil : queuedStartRequestedAt.map {
+                    Date().timeIntervalSince($0)
+                }
                 let decision = HotkeyStartPolicy.onModelsReady(
                     queuedStartRequest: queuedStartRequest,
-                    modelsReady: isReady
+                    modelsReady: isReady,
+                    queuedElapsed: queuedElapsed
                 )
                 applyHotkeyDecision(decision)
             }
@@ -1017,7 +1022,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     @MainActor
     private func startHotkeyWarmupTimeout() {
         hotkeyWarmupTask?.cancel()
-        hotkeyWarmupTask = Task { @MainActor [weak self] in
+        hotkeyWarmupTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await Task.sleep(for: .seconds(12))
@@ -1025,8 +1030,11 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 return
             }
 
-            let timeoutDecision = HotkeyStartPolicy.onWarmupTimeout(queuedStartRequest: queuedStartRequest)
-            applyHotkeyDecision(timeoutDecision)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                let timeoutDecision = HotkeyStartPolicy.onWarmupTimeout(queuedStartRequest: queuedStartRequest)
+                applyHotkeyDecision(timeoutDecision)
+            }
         }
     }
 
@@ -1034,6 +1042,7 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private func setQueuedStartRequest(_ queued: Bool) {
         guard queuedStartRequest != queued else { return }
         queuedStartRequest = queued
+        queuedStartRequestedAt = queued ? Date() : nil
 
         if !queued {
             hotkeyWarmupTask?.cancel()

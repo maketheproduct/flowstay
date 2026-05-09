@@ -73,6 +73,18 @@ final class HotkeyStartPolicyTests: XCTestCase {
         XCTAssertEqual(decision.actions, [.startRecording])
     }
 
+    func testStaleQueuedWarmupDoesNotAutoStartWhenModelsBecomeReady() {
+        let decision = HotkeyStartPolicy.onModelsReady(
+            queuedStartRequest: true,
+            modelsReady: true,
+            queuedElapsed: 13,
+            maximumQueuedWarmupDuration: 12
+        )
+
+        XCTAssertEqual(decision.queuedStartRequest, false)
+        XCTAssertEqual(decision.actions, [.blocked(.error)])
+    }
+
     func testSecondPressCancelsQueuedStart() {
         let decision = HotkeyStartPolicy.onToggle(
             HotkeyStartInput(

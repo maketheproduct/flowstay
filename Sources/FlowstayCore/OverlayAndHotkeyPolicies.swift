@@ -130,12 +130,24 @@ public enum HotkeyStartPolicy {
         )
     }
 
-    public static func onModelsReady(queuedStartRequest: Bool, modelsReady: Bool) -> HotkeyStartDecision {
+    public static func onModelsReady(
+        queuedStartRequest: Bool,
+        modelsReady: Bool,
+        queuedElapsed: TimeInterval? = nil,
+        maximumQueuedWarmupDuration: TimeInterval = 12
+    ) -> HotkeyStartDecision {
         guard queuedStartRequest else {
             return HotkeyStartDecision(actions: [], queuedStartRequest: false)
         }
 
         if modelsReady {
+            if let queuedElapsed, queuedElapsed >= maximumQueuedWarmupDuration {
+                return HotkeyStartDecision(
+                    actions: [.blocked(.error)],
+                    queuedStartRequest: false
+                )
+            }
+
             return HotkeyStartDecision(
                 actions: [.startRecording],
                 queuedStartRequest: false

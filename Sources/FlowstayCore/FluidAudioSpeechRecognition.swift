@@ -10,30 +10,6 @@ private final class TranscriptionCompletionSink {
     var handler: (@Sendable (String, TimeInterval) -> Void)?
 }
 
-private let recordingPipelineWarmStateValidityDuration: TimeInterval = 300
-
-struct DefaultInputSnapshot: Equatable {
-    let deviceID: AudioDeviceID
-    let sampleRate: Double
-    let channelCount: AVAudioChannelCount
-}
-
-struct RecordingPipelineWarmState: Equatable {
-    let snapshot: DefaultInputSnapshot
-    let didReceiveConvertedBuffer: Bool
-    let completedAt: Date
-
-    func isValid(
-        for currentSnapshot: DefaultInputSnapshot,
-        now: Date = Date(),
-        maximumAge: TimeInterval = recordingPipelineWarmStateValidityDuration
-    ) -> Bool {
-        didReceiveConvertedBuffer &&
-            snapshot == currentSnapshot &&
-            now.timeIntervalSince(completedAt) <= maximumAge
-    }
-}
-
 func convertedOutputFrameCapacity(
     inputFrameCount: AVAudioFrameCount,
     inputSampleRate: Double,
@@ -47,18 +23,6 @@ func convertedOutputFrameCapacity(
     return AVAudioFrameCount(max(1, Int(ceil(scaledFrameCount))))
 }
 
-func shouldForceRecordingPipelinePrewarm(
-    currentSnapshot: DefaultInputSnapshot,
-    warmState: RecordingPipelineWarmState?,
-    now: Date = Date()
-) -> Bool {
-    guard let warmState else {
-        return true
-    }
-
-    return !warmState.isValid(for: currentSnapshot, now: now)
-}
-
 func shouldRetryRecordingStartupAfterInitialBufferTimeout(
     completedAttempts: Int,
     maximumAttempts: Int
@@ -66,26 +30,39 @@ func shouldRetryRecordingStartupAfterInitialBufferTimeout(
     completedAttempts < maximumAttempts
 }
 
-private func defaultInputDevicePropertyAddress() -> AudioObjectPropertyAddress {
-    AudioObjectPropertyAddress(
-        mSelector: kAudioHardwarePropertyDefaultInputDevice,
-        mScope: kAudioObjectPropertyScopeGlobal,
-        mElement: kAudioObjectPropertyElementMain
-    )
-}
-
 private final class PrewarmObservationState: @unchecked Sendable {
     private let lock = NSLock()
     private var receivedConvertedBuffer = false
+    private var firstCallbackAt: Date?
+    private var firstReceivedAt: Date?
+
+    func markHALCallback() {
+        lock.withLock {
+            if firstCallbackAt == nil {
+                firstCallbackAt = Date()
+            }
+        }
+    }
 
     func markReceived() {
         lock.withLock {
+            if firstReceivedAt == nil {
+                firstReceivedAt = Date()
+            }
             receivedConvertedBuffer = true
         }
     }
 
     var hasReceivedConvertedBuffer: Bool {
         lock.withLock { receivedConvertedBuffer }
+    }
+
+    var firstConvertedBufferAt: Date? {
+        lock.withLock { firstReceivedAt }
+    }
+
+    var firstHALCallbackAt: Date? {
+        lock.withLock { firstCallbackAt }
     }
 }
 
@@ -409,12 +386,14 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
     /// Download monitoring task
     private var downloadMonitorTask: Task<Void, Never>?
-    private var backgroundRewarmTask: Task<Void, Never>?
-    private var pendingRewarmDebounceTask: Task<Void, Never>?
-    private var needsBackgroundRewarmAfterCurrentTask = false
-    private var defaultInputDeviceListener: AudioObjectPropertyListenerBlock?
-    private let defaultInputDeviceListenerQueue = DispatchQueue(label: "com.flowstay.app.audio.default-input-listener")
-    private var recordingPipelineWarmState: RecordingPipelineWarmState?
+    private let audioInputDeviceMonitor = AudioInputDeviceMonitor()
+    private let idleActivationCoordinator: AudioInputActivationCoordinator
+    private let halCaptureBackend: any AudioInputCaptureBackend
+    private let avAudioEngineFallbackBackend: any AudioInputCaptureBackend
+    private var activeCaptureBackend: (any AudioInputCaptureBackend)?
+    private var activeCaptureBackendKind: AudioCaptureBackendKind?
+    private var latestAudioStartupMetrics: AudioStartupMetrics?
+    private var latestIdleActivationMetrics: AudioInputActivationMetrics?
     /// One-way latch. After `shutdown()`, this instance is permanently unusable and
     /// subsequent entry points must bail out instead of attempting to rearm it.
     private var isShuttingDown = false
@@ -429,9 +408,6 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     private let trailingBufferDelay: TimeInterval = 0.4 // Allow tap buffers to flush before stop
     private let requiredSpeechTailGap: TimeInterval = 0.65
     private let maximumTrailingBufferDelay: TimeInterval = 0.9
-    private let hardwareSettleDelayNanoseconds: UInt64 = 50_000_000
-    private let prewarmConvertedBufferTimeout: TimeInterval = 0.5
-    private let recordingStartupConvertedBufferTimeout: TimeInterval = 0.75
     private let recordingStartupRetryDelayNanoseconds: UInt64 = 200_000_000
     private let maximumRecordingStartupAttempts = 2
 
@@ -454,10 +430,31 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         return AsrModels.modelsExist(at: cacheDir)
     }
 
-    public init(appState: AppState? = nil) {
+    init(
+        appState: AppState? = nil,
+        halCaptureBackend: any AudioInputCaptureBackend = CoreAudioHALInputCapture(),
+        avAudioEngineFallbackBackend: any AudioInputCaptureBackend = AVAudioEngineInputCaptureBackend(),
+        idleActivationCoordinator: AudioInputActivationCoordinator = AudioInputActivationCoordinator(
+            backend: CoreAudioHALInputCapture()
+        )
+    ) {
         self.appState = appState
+        self.halCaptureBackend = halCaptureBackend
+        self.avAudioEngineFallbackBackend = avAudioEngineFallbackBackend
+        self.idleActivationCoordinator = idleActivationCoordinator
         super.init()
-        registerDefaultInputDeviceListenerIfNeeded()
+        startAudioInputDeviceMonitor()
+    }
+
+    public convenience init(appState: AppState? = nil) {
+        self.init(
+            appState: appState,
+            halCaptureBackend: CoreAudioHALInputCapture(),
+            avAudioEngineFallbackBackend: AVAudioEngineInputCaptureBackend(),
+            idleActivationCoordinator: AudioInputActivationCoordinator(
+                backend: CoreAudioHALInputCapture()
+            )
+        )
     }
 
     override public convenience init() {
@@ -489,20 +486,25 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         isShuttingDown = true
         downloadMonitorTask?.cancel()
         downloadMonitorTask = nil
-        backgroundRewarmTask?.cancel()
-        backgroundRewarmTask = nil
-        pendingRewarmDebounceTask?.cancel()
-        pendingRewarmDebounceTask = nil
-        needsBackgroundRewarmAfterCurrentTask = false
-        recordingPipelineWarmState = nil
         safetyWatchdogTask?.cancel()
         safetyWatchdogTask = nil
         audioLevelTimer?.invalidate()
         audioLevelTimer = nil
         silenceDetectionTimer?.invalidate()
         silenceDetectionTimer = nil
-        unregisterDefaultInputDeviceListener()
+        Task { [audioInputDeviceMonitor] in
+            await audioInputDeviceMonitor.stopListening()
+        }
+        Task { [idleActivationCoordinator] in
+            await idleActivationCoordinator.stop()
+        }
         cleanupAudioEngine()
+        let backend = activeCaptureBackend
+        activeCaptureBackend = nil
+        activeCaptureBackendKind = nil
+        Task {
+            await backend?.stop()
+        }
         isRecording = false
         userInitiatedStop = false
         audioLevel = 0.0
@@ -533,202 +535,39 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         tapProxy = nil
     }
 
-    private func registerDefaultInputDeviceListenerIfNeeded() {
-        guard defaultInputDeviceListener == nil else { return }
-
-        var address = defaultInputDevicePropertyAddress()
-        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { @MainActor [weak self] in
-                self?.handleDefaultInputDeviceChange()
+    private func startAudioInputDeviceMonitor() {
+        let monitor = audioInputDeviceMonitor
+        Task {
+            await monitor.startListening { event in
+                Task { @MainActor [weak self] in
+                    await self?.handleAudioInputDeviceChange(event)
+                }
             }
         }
-
-        let status = AudioObjectAddPropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            defaultInputDeviceListenerQueue,
-            listener
-        )
-
-        guard status == noErr else {
-            logger.error("[FluidAudioSpeechRecognition] Failed to register default input listener: \(status, privacy: .public)")
-            return
-        }
-
-        defaultInputDeviceListener = listener
     }
 
-    private func unregisterDefaultInputDeviceListener() {
-        guard let defaultInputDeviceListener else { return }
-
-        var address = defaultInputDevicePropertyAddress()
-        let status = AudioObjectRemovePropertyListenerBlock(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            defaultInputDeviceListenerQueue,
-            defaultInputDeviceListener
-        )
-
-        if status != noErr {
-            logger.error("[FluidAudioSpeechRecognition] Failed to remove default input listener: \(status, privacy: .public)")
-        }
-
-        self.defaultInputDeviceListener = nil
-    }
-
-    private func handleDefaultInputDeviceChange() {
-        let previousWarmState = recordingPipelineWarmState
-        recordingPipelineWarmState = nil
-
-        if let previousWarmState {
-            logger.info(
-                "[FluidAudioSpeechRecognition] Default input changed; invalidated warm state for device \(previousWarmState.snapshot.deviceID, privacy: .public)"
-            )
-        } else {
-            logger.info("[FluidAudioSpeechRecognition] Default input changed; no existing warm state to invalidate")
-        }
-
-        guard !isRecording else {
-            logger.info("[FluidAudioSpeechRecognition] Mid-recording device changes are not auto-recovered in this pass")
-            return
-        }
-
+    private func handleAudioInputDeviceChange(_ event: AudioInputDeviceChangeEvent) async {
         guard !isShuttingDown else {
-            logger.debug("[FluidAudioSpeechRecognition] Ignoring default input change during shutdown")
             return
         }
 
         guard AVAudioApplication.shared.recordPermission == .granted else {
-            logger.debug("[FluidAudioSpeechRecognition] Skipping background re-prewarm: microphone permission not granted")
+            logger.debug("[FluidAudioSpeechRecognition] Idle input activation skipped: microphone permission not granted")
             return
         }
 
-        guard isModelsReady else {
-            logger.debug("[FluidAudioSpeechRecognition] Skipping background re-prewarm: models not ready")
-            return
+        if let snapshot = event.snapshot {
+            logger.info(
+                "[FluidAudioSpeechRecognition] Input device event \(event.reason.rawValue, privacy: .public): default device \(snapshot.deviceID, privacy: .public)"
+            )
+        } else {
+            logger.warning(
+                "[FluidAudioSpeechRecognition] Input device event \(event.reason.rawValue, privacy: .public): no default input snapshot"
+            )
         }
 
-        scheduleBackgroundRewarmDebounced()
-    }
-
-    private func scheduleBackgroundRewarmDebounced() {
-        pendingRewarmDebounceTask?.cancel()
-        pendingRewarmDebounceTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            do {
-                try await Task.sleep(nanoseconds: 500_000_000)
-            } catch {
-                return
-            }
-
-            guard !Task.isCancelled else { return }
-            pendingRewarmDebounceTask = nil
-
-            guard !isShuttingDown else { return }
-            guard !isRecording else { return }
-            guard AVAudioApplication.shared.recordPermission == .granted else { return }
-            guard isModelsReady else { return }
-
-            if backgroundRewarmTask != nil {
-                needsBackgroundRewarmAfterCurrentTask = true
-                logger.debug("[FluidAudioSpeechRecognition] Queued follow-up background re-prewarm after current task")
-                return
-            }
-
-            startBackgroundRewarmIfNeeded()
-        }
-    }
-
-    private func startBackgroundRewarmIfNeeded() {
-        guard backgroundRewarmTask == nil else {
-            logger.debug("[FluidAudioSpeechRecognition] Background re-prewarm already running")
-            return
-        }
-
-        backgroundRewarmTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let didPrewarm = await prewarmRecordingPipeline()
-            let status: String = if Task.isCancelled {
-                "cancelled"
-            } else {
-                didPrewarm ? "completed" : "failed"
-            }
-            logger.info("[FluidAudioSpeechRecognition] Background re-prewarm \(status, privacy: .public)")
-            backgroundRewarmTask = nil
-
-            guard !isShuttingDown else { return }
-
-            if needsBackgroundRewarmAfterCurrentTask {
-                needsBackgroundRewarmAfterCurrentTask = false
-                recordingPipelineWarmState = nil
-                startBackgroundRewarmIfNeeded()
-            }
-        }
-    }
-
-    private func cancelBackgroundRewarmIfNeeded() async {
-        pendingRewarmDebounceTask?.cancel()
-        pendingRewarmDebounceTask = nil
-        needsBackgroundRewarmAfterCurrentTask = false
-
-        guard let backgroundRewarmTask else { return }
-
-        logger.info("[FluidAudioSpeechRecognition] Cancelling background re-prewarm before recording start")
-        self.backgroundRewarmTask = nil
-        backgroundRewarmTask.cancel()
-        _ = await backgroundRewarmTask.result
-    }
-
-    private func defaultInputDeviceID() -> AudioDeviceID? {
-        var deviceID = AudioDeviceID(bitPattern: 0)
-        var propertySize = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = defaultInputDevicePropertyAddress()
-
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &propertySize,
-            &deviceID
-        )
-
-        guard status == noErr, propertySize == UInt32(MemoryLayout<AudioDeviceID>.size) else {
-            return nil
-        }
-
-        guard deviceID != AudioDeviceID(bitPattern: 0), deviceID != kAudioObjectUnknown else {
-            return nil
-        }
-
-        return deviceID
-    }
-
-    private func defaultInputSnapshot(for inputFormat: AVAudioFormat) -> DefaultInputSnapshot? {
-        guard let deviceID = defaultInputDeviceID() else {
-            return nil
-        }
-
-        return DefaultInputSnapshot(
-            deviceID: deviceID,
-            sampleRate: inputFormat.sampleRate,
-            channelCount: inputFormat.channelCount
-        )
-    }
-
-    private func describe(snapshot: DefaultInputSnapshot) -> String {
-        "\(snapshot.deviceID) @ \(snapshot.sampleRate)Hz / \(snapshot.channelCount)ch"
-    }
-
-    private func updateRecordingPipelineWarmState(
-        snapshot: DefaultInputSnapshot,
-        didReceiveConvertedBuffer: Bool
-    ) {
-        recordingPipelineWarmState = RecordingPipelineWarmState(
-            snapshot: snapshot,
-            didReceiveConvertedBuffer: didReceiveConvertedBuffer,
-            completedAt: Date()
-        )
+        await idleActivationCoordinator.requestProof(reason: event.reason)
+        latestIdleActivationMetrics = await (idleActivationCoordinator.recentMetrics()).first
     }
 
     private func waitForConvertedBuffer(
@@ -767,50 +606,6 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         case .conversionError:
             logger.fault("[FluidAudioSpeechRecognition] EOS flush conversion error during \(context, privacy: .public)")
         }
-    }
-
-    private func finishWarmEngine(
-        warmEngine: AVAudioEngine,
-        inputNode: AVAudioInputNode,
-        warmProxy: FluidAudioTapProxy
-    ) async {
-        inputNode.removeTap(onBus: 0)
-        let flushResult = await warmProxy.flushEndOfStream()
-        logFlushResult(flushResult, context: "prewarm cleanup")
-        await warmProxy.waitForPendingTasks()
-
-        if warmEngine.isRunning {
-            warmEngine.stop()
-        }
-
-        await chunkedRecordingManager.reset()
-    }
-
-    private func cleanupRecordingStartupAttempt(
-        recordingEngine: AVAudioEngine,
-        inputNode: AVAudioInputNode,
-        proxy: FluidAudioTapProxy?
-    ) async {
-        inputNode.removeTap(onBus: 0)
-        if let proxy {
-            let flushResult = await proxy.flushEndOfStream()
-            logFlushResult(flushResult, context: "recording startup cleanup")
-            await proxy.waitForPendingTasks()
-        }
-
-        if recordingEngine.isRunning {
-            recordingEngine.stop()
-        }
-
-        if audioEngine === recordingEngine {
-            audioEngine = nil
-        }
-
-        if tapProxy === proxy {
-            tapProxy = nil
-        }
-
-        await chunkedRecordingManager.reset()
     }
 
     /// Download models with retry logic and exponential backoff
@@ -910,155 +705,12 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         }
     }
 
-    // swiftlint:disable function_body_length
-    /// Pre-warm audio hardware and converter pipeline so first hotkey press
-    /// doesn't pay the full cold-start penalty.
-    ///
-    /// Returns true when prewarm completed successfully. Returns false when
-    /// prewarm is skipped (e.g. microphone not authorized) or fails.
     @discardableResult
     public func prewarmRecordingPipeline() async -> Bool {
-        guard !Task.isCancelled else {
-            return false
-        }
-
-        guard !isShuttingDown else {
-            return false
-        }
-
-        guard asrManager != nil else {
-            return false
-        }
-
-        guard !isRecording else {
-            return false
-        }
-
-        // Never touch AVAudioEngine input hardware until microphone permission
-        // has already been granted by explicit user action.
-        guard AVAudioApplication.shared.recordPermission == .granted else {
-            logger.warning("[FluidAudioSpeechRecognition] Pre-warm skipped: microphone permission not granted")
-            return false
-        }
-
-        guard defaultInputDeviceID() != nil else {
-            logger.warning("[FluidAudioSpeechRecognition] Pre-warm skipped: no default audio input device")
-            return false
-        }
-
-        logger.info("[FluidAudioSpeechRecognition] Pre-warming recording pipeline...")
-
-        let warmEngine = AVAudioEngine()
-        let inputNode = warmEngine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-
-        guard let outputFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: sampleRate,
-            channels: 1,
-            interleaved: false
-        ) else {
-            logger.warning("[FluidAudioSpeechRecognition] Pre-warm skipped: failed to create output format")
-            return false
-        }
-
-        let prewarmObservation = PrewarmObservationState()
-        guard let warmProxy = FluidAudioTapProxy(
-            owner: self,
-            audioBufferProcessor: nil,
-            inputFormat: inputFormat,
-            outputFormat: outputFormat,
-            onFirstConvertedBuffer: {
-                prewarmObservation.markReceived()
-            }
-        ) else {
-            logger.warning("[FluidAudioSpeechRecognition] Pre-warm skipped: failed to create tap proxy")
-            return false
-        }
-
-        inputNode.removeTap(onBus: 0)
-        installFluidAudioTap(
-            inputNode: inputNode,
-            bufferSize: 1024,
-            format: inputFormat,
-            proxy: warmProxy
-        )
-
-        do {
-            warmEngine.prepare()
-            try await Task.sleep(nanoseconds: hardwareSettleDelayNanoseconds)
-            guard !Task.isCancelled else {
-                await finishWarmEngine(
-                    warmEngine: warmEngine,
-                    inputNode: inputNode,
-                    warmProxy: warmProxy
-                )
-                return false
-            }
-            try warmEngine.start()
-
-            let didReceiveConvertedBuffer = await waitForConvertedBuffer(
-                observation: prewarmObservation,
-                timeout: prewarmConvertedBufferTimeout
-            )
-            let snapshot = defaultInputSnapshot(for: inputNode.outputFormat(forBus: 0))
-
-            await finishWarmEngine(
-                warmEngine: warmEngine,
-                inputNode: inputNode,
-                warmProxy: warmProxy
-            )
-
-            if let snapshot {
-                updateRecordingPipelineWarmState(
-                    snapshot: snapshot,
-                    didReceiveConvertedBuffer: didReceiveConvertedBuffer
-                )
-            }
-
-            if didReceiveConvertedBuffer {
-                if let snapshot {
-                    // swiftformat:disable redundantSelf
-                    logger.info(
-                        "[FluidAudioSpeechRecognition] Recording pipeline pre-warmed for \(self.describe(snapshot: snapshot), privacy: .public)"
-                    )
-                    // swiftformat:enable redundantSelf
-                } else {
-                    logger.info("[FluidAudioSpeechRecognition] Recording pipeline pre-warmed")
-                }
-                return true
-            }
-
-            if let snapshot {
-                // swiftformat:disable redundantSelf
-                logger.warning(
-                    "[FluidAudioSpeechRecognition] Pre-warm timed out before first converted buffer for \(self.describe(snapshot: snapshot), privacy: .public)"
-                )
-                // swiftformat:enable redundantSelf
-            } else {
-                logger.warning("[FluidAudioSpeechRecognition] Pre-warm timed out before first converted buffer")
-            }
-            return false
-        } catch {
-            if let snapshot = defaultInputSnapshot(for: inputNode.outputFormat(forBus: 0)) {
-                updateRecordingPipelineWarmState(
-                    snapshot: snapshot,
-                    didReceiveConvertedBuffer: false
-                )
-            } else {
-                recordingPipelineWarmState = nil
-            }
-            logger.warning("[FluidAudioSpeechRecognition] Pre-warm failed: \(error.localizedDescription, privacy: .public)")
-            await finishWarmEngine(
-                warmEngine: warmEngine,
-                inputNode: inputNode,
-                warmProxy: warmProxy
-            )
-            return false
-        }
+        logger.debug("[FluidAudioSpeechRecognition] Audio prewarm skipped; idle activation proof and recording startup now open HAL just in time")
+        return false
     }
 
-    // swiftlint:enable function_body_length
     // swiftlint:disable function_body_length
     public func startRecording() async throws {
         guard !isShuttingDown else {
@@ -1074,7 +726,6 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             throw FluidAudioInternalError.asrUnavailable
         }
 
-        // Ensure we're not already recording
         if isRecording {
             logger.info("[FluidAudioSpeechRecognition] Already recording, stopping first...")
             stopRecording()
@@ -1095,183 +746,217 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             self.transcription = ""
         }
 
-        guard defaultInputDeviceID() != nil else {
-            logger.error("[FluidAudioSpeechRecognition] Cannot start recording: no default audio input device")
-            throw FluidAudioError.noInputDeviceAvailable
-        }
+        await idleActivationCoordinator.setRecordingActive(true)
 
-        await cancelBackgroundRewarmIfNeeded()
-
-        // Create fresh audio engine - it will use the system default input device
-        // This ensures we don't degrade Bluetooth audio quality when not recording
-        for startupAttempt in 1 ... maximumRecordingStartupAttempts {
-            audioEngine = AVAudioEngine()
-
-            guard let audioEngine else {
-                throw FluidAudioInternalError.audioEngineCreationFailed
-            }
-            var recordingEngine = audioEngine
-
-            // Access inputNode - it will use the current system default
-            var inputNode = recordingEngine.inputNode
-            var inputFormat = inputNode.outputFormat(forBus: 0)
-            var startupProxy: FluidAudioTapProxy?
-            var didCleanupAttempt = false
-
-            func cleanupAttemptIfNeeded() async {
-                guard !didCleanupAttempt else { return }
-                didCleanupAttempt = true
-                await cleanupRecordingStartupAttempt(
-                    recordingEngine: recordingEngine,
-                    inputNode: inputNode,
-                    proxy: startupProxy
-                )
-            }
-
-            do {
-                if let currentSnapshot = defaultInputSnapshot(for: inputFormat),
-                   shouldForceRecordingPipelinePrewarm(
-                       currentSnapshot: currentSnapshot,
-                       warmState: recordingPipelineWarmState
-                   )
-                {
-                    // swiftformat:disable redundantSelf
-                    logger.info(
-                        "[FluidAudioSpeechRecognition] Warm state missing or stale for \(self.describe(snapshot: currentSnapshot), privacy: .public); forcing prewarm before recording"
+        do {
+            var didTryAVAudioEngineFallback = false
+            for startupAttempt in 1 ... maximumRecordingStartupAttempts {
+                let didStart: Bool
+                do {
+                    didStart = try await startCaptureAttempt(
+                        startupAttempt: startupAttempt,
+                        preferredBackend: halCaptureBackend,
+                        backendKind: .coreAudioHAL,
+                        fallbackUsed: false
                     )
-                    // swiftformat:enable redundantSelf
+                } catch {
+                    if startupAttempt == 1, !didTryAVAudioEngineFallback, shouldFallbackFromHALStartup(error) {
+                        didTryAVAudioEngineFallback = true
+                        logger.warning("[FluidAudioSpeechRecognition] HAL startup failed before activation; trying AVAudioEngine fallback once: \(error.localizedDescription, privacy: .public)")
+                        let fallbackDidStart = try await startCaptureAttempt(
+                            startupAttempt: startupAttempt,
+                            preferredBackend: avAudioEngineFallbackBackend,
+                            backendKind: .avAudioEngineFallback,
+                            fallbackUsed: true
+                        )
+                        if fallbackDidStart {
+                            logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
+                            return
+                        }
 
-                    cleanupAudioEngine()
-                    let didPrewarm = await prewarmRecordingPipeline()
-                    if !didPrewarm {
-                        logger.warning("[FluidAudioSpeechRecognition] Forced prewarm did not complete before recording start; continuing with a fresh engine")
+                        throw FluidAudioInternalError.startupTimedOut
                     }
 
-                    self.audioEngine = AVAudioEngine()
-
-                    guard let refreshedAudioEngine = self.audioEngine else {
-                        throw FluidAudioInternalError.audioEngineRecreationFailed
-                    }
-
-                    recordingEngine = refreshedAudioEngine
-                    inputNode = refreshedAudioEngine.inputNode
-                    inputFormat = inputNode.outputFormat(forBus: 0)
+                    throw error
                 }
 
-                // Log input format
-                logger.debug("[FluidAudioSpeechRecognition] Input format: \(inputFormat.sampleRate, privacy: .public)Hz, \(inputFormat.channelCount, privacy: .public) channel(s)")
-
-                // Convert to 16kHz mono for FluidAudio
-                // This automatically handles ANY input sample rate (44.1kHz, 48kHz, 96kHz, etc.)
-                guard let outputFormat = AVAudioFormat(
-                    commonFormat: .pcmFormatFloat32,
-                    sampleRate: sampleRate,
-                    channels: 1,
-                    interleaved: false
-                ) else {
-                    logger.error("[FluidAudioSpeechRecognition] Failed to create output audio format")
-                    throw FluidAudioError.microphoneSetupFailed
-                }
-
-                // Remove any existing tap
-                inputNode.removeTap(onBus: 0)
-
-                let startupObservation = PrewarmObservationState()
-
-                // Install tap via proxy to avoid MainActor isolation issues
-                guard let proxy = FluidAudioTapProxy(
-                    owner: self,
-                    audioBufferProcessor: audioBufferProcessor,
-                    inputFormat: inputFormat,
-                    outputFormat: outputFormat,
-                    onFirstConvertedBuffer: {
-                        startupObservation.markReceived()
-                    }
-                ) else {
-                    logger.error("[FluidAudioSpeechRecognition] Failed to create audio tap proxy")
-                    throw FluidAudioError.microphoneSetupFailed
-                }
-                startupProxy = proxy
-                tapProxy = proxy
-
-                logger.debug("[FluidAudioSpeechRecognition] Installing audio tap...")
-                installFluidAudioTap(
-                    inputNode: inputNode,
-                    bufferSize: 1024,
-                    format: inputFormat,
-                    proxy: proxy
-                )
-
-                // Start audio engine with proper timing to avoid -10877 error
-                // On macOS, we don't need AVAudioSession (iOS-only)
-                if !recordingEngine.isRunning {
-                    logger.debug("[FluidAudioSpeechRecognition] Preparing audio engine...")
-
-                    // Prepare the engine - this configures the audio hardware
-                    recordingEngine.prepare()
-
-                    // CRITICAL: Wait for hardware configuration to complete
-                    // This prevents kAudioUnitErr_CannotDoInCurrentContext (-10877)
-                    try await Task.sleep(nanoseconds: hardwareSettleDelayNanoseconds)
-
-                    logger.info("[FluidAudioSpeechRecognition] Starting audio engine...")
-                    try recordingEngine.start()
-                    logger.info("[FluidAudioSpeechRecognition] Audio engine started successfully")
-                } else {
-                    logger.debug("[FluidAudioSpeechRecognition] Audio engine already running")
-                }
-
-                await chunkedRecordingManager.startRecording()
-
-                let didReceiveInitialBuffer = await waitForConvertedBuffer(
-                    observation: startupObservation,
-                    timeout: recordingStartupConvertedBufferTimeout
-                )
-
-                if let activeSnapshot = defaultInputSnapshot(for: inputNode.outputFormat(forBus: 0)) {
-                    updateRecordingPipelineWarmState(
-                        snapshot: activeSnapshot,
-                        didReceiveConvertedBuffer: didReceiveInitialBuffer
-                    )
-                }
-
-                if didReceiveInitialBuffer {
-                    isRecording = true
-                    startAudioLevelMonitoring()
-
-                    // Arm silence detection (actual timer starts after first detected speech).
-                    armSilenceDetection()
-
-                    logger.info("[FluidAudioSpeechRecognition] Recording started successfully")
+                if didStart {
                     logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
                     return
                 }
-
-                // swiftformat:disable redundantSelf
-                logger.warning(
-                    "[FluidAudioSpeechRecognition] No converted audio received within \(self.recordingStartupConvertedBufferTimeout, privacy: .public)s on startup attempt \(startupAttempt, privacy: .public)"
-                )
-                // swiftformat:enable redundantSelf
-                await cleanupAttemptIfNeeded()
 
                 guard shouldRetryRecordingStartupAfterInitialBufferTimeout(
                     completedAttempts: startupAttempt,
                     maximumAttempts: maximumRecordingStartupAttempts
                 ) else {
+                    if !didTryAVAudioEngineFallback {
+                        didTryAVAudioEngineFallback = true
+                        logger.warning("[FluidAudioSpeechRecognition] HAL startup timed out after callbacks without converted samples; trying AVAudioEngine fallback once")
+                        let fallbackDidStart = try await startCaptureAttempt(
+                            startupAttempt: maximumRecordingStartupAttempts + 1,
+                            preferredBackend: avAudioEngineFallbackBackend,
+                            backendKind: .avAudioEngineFallback,
+                            fallbackUsed: true
+                        )
+                        if fallbackDidStart {
+                            logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
+                            return
+                        }
+                    }
+
                     throw FluidAudioInternalError.startupTimedOut
                 }
 
-                logger.info("[FluidAudioSpeechRecognition] Retrying recording startup after initial buffer timeout")
+                logger.info("[FluidAudioSpeechRecognition] Retrying recording startup after activation timeout")
                 try? await Task.sleep(nanoseconds: recordingStartupRetryDelayNanoseconds)
-            } catch {
-                await cleanupAttemptIfNeeded()
-                throw error
             }
+
+            throw FluidAudioError.microphoneSetupFailed
+        } catch {
+            await idleActivationCoordinator.setRecordingActive(false)
+            throw error
+        }
+    }
+
+    private func startCaptureAttempt(
+        startupAttempt: Int,
+        preferredBackend: any AudioInputCaptureBackend,
+        backendKind: AudioCaptureBackendKind,
+        fallbackUsed: Bool
+    ) async throws -> Bool {
+        let snapshot = try preferredBackend.currentDefaultInputSnapshot()
+        logger.info(
+            "[FluidAudioSpeechRecognition] Opening \(backendKind.rawValue, privacy: .public) input device \(snapshot.deviceID, privacy: .public) \(snapshot.name ?? "unknown", privacy: .public)"
+        )
+
+        let firstSamplesObservation = PrewarmObservationState()
+        let startupStartedAt = Date()
+
+        await chunkedRecordingManager.startRecording()
+        do {
+            try await preferredBackend.start(
+                snapshot: snapshot,
+                onHALCallback: firstSamplesObservation.markHALCallback,
+                onSamples: { [weak self] samples in
+                    guard !samples.isEmpty else { return }
+                    firstSamplesObservation.markReceived()
+                    Task { @MainActor [weak self] in
+                        guard let self, !self.isShuttingDown else { return }
+                        let rms = sqrt(samples.map { $0 * $0 }.reduce(0, +) / Float(samples.count))
+                        let result = await audioBufferProcessor.process(
+                            samples: samples,
+                            rms: rms,
+                            suppressVisualization: false
+                        )
+                        applyProcessedAudioResult(result)
+                    }
+                }
+            )
+        } catch {
+            await preferredBackend.stop()
+            await chunkedRecordingManager.reset()
+            latestAudioStartupMetrics = makeAudioStartupMetrics(
+                backendKind: backendKind,
+                snapshot: snapshot,
+                startupAttempt: startupAttempt,
+                startupStartedAt: startupStartedAt,
+                firstHALCallbackAt: firstSamplesObservation.firstHALCallbackAt,
+                firstSamplesAt: nil,
+                fallbackUsed: fallbackUsed,
+                errorCode: Int32((error as NSError).code)
+            )
+            throw error
         }
 
-        // Unreachable with the current control flow, but retained as a defensive guard
-        // so future edits cannot accidentally fall through without starting recording.
-        throw FluidAudioError.microphoneSetupFailed
+        activeCaptureBackend = preferredBackend
+        activeCaptureBackendKind = backendKind
+
+        let didReceiveInitialBuffer = await waitForConvertedBuffer(
+            observation: firstSamplesObservation,
+            timeout: 1.5
+        )
+
+        if !didReceiveInitialBuffer {
+            logger.warning(
+                "[FluidAudioSpeechRecognition] \(backendKind.rawValue, privacy: .public) delivered no converted samples within activation timeout on attempt \(startupAttempt, privacy: .public)"
+            )
+            await preferredBackend.stop()
+            activeCaptureBackend = nil
+            activeCaptureBackendKind = nil
+            await chunkedRecordingManager.reset()
+            latestAudioStartupMetrics = makeAudioStartupMetrics(
+                backendKind: backendKind,
+                snapshot: snapshot,
+                startupAttempt: startupAttempt,
+                startupStartedAt: startupStartedAt,
+                firstHALCallbackAt: firstSamplesObservation.firstHALCallbackAt,
+                firstSamplesAt: firstSamplesObservation.firstConvertedBufferAt,
+                fallbackUsed: fallbackUsed,
+                errorCode: nil
+            )
+            return false
+        }
+
+        let postActivationSnapshot = try? preferredBackend.currentDefaultInputSnapshot()
+        if let postActivationSnapshot, postActivationSnapshot.deviceID != snapshot.deviceID {
+            logger.warning(
+                "[FluidAudioSpeechRecognition] Default input changed during startup from \(snapshot.deviceID, privacy: .public) to \(postActivationSnapshot.deviceID, privacy: .public); restarting capture"
+            )
+            await preferredBackend.stop()
+            activeCaptureBackend = nil
+            activeCaptureBackendKind = nil
+            await chunkedRecordingManager.reset()
+            return false
+        }
+
+        latestAudioStartupMetrics = makeAudioStartupMetrics(
+            backendKind: backendKind,
+            snapshot: snapshot,
+            startupAttempt: startupAttempt,
+            startupStartedAt: startupStartedAt,
+            firstHALCallbackAt: firstSamplesObservation.firstHALCallbackAt,
+            firstSamplesAt: firstSamplesObservation.firstConvertedBufferAt,
+            fallbackUsed: fallbackUsed,
+            errorCode: nil
+        )
+        isRecording = true
+        startAudioLevelMonitoring()
+        armSilenceDetection()
+        logger.info("[FluidAudioSpeechRecognition] Recording started after verified sample delivery")
+        return true
+    }
+
+    private func shouldFallbackFromHALStartup(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain != NSOSStatusErrorDomain || nsError.code == 0
+    }
+
+    private func makeAudioStartupMetrics(
+        backendKind: AudioCaptureBackendKind,
+        snapshot: AudioInputDeviceSnapshot,
+        startupAttempt: Int,
+        startupStartedAt: Date,
+        firstHALCallbackAt: Date?,
+        firstSamplesAt: Date?,
+        fallbackUsed: Bool,
+        errorCode: Int32?
+    ) -> AudioStartupMetrics {
+        let firstHALCallbackMs = firstHALCallbackAt.map { $0.timeIntervalSince(startupStartedAt) * 1000 }
+        let firstSamplesMs = firstSamplesAt.map { $0.timeIntervalSince(startupStartedAt) * 1000 }
+        return AudioStartupMetrics(
+            backend: backendKind.rawValue,
+            deviceID: UInt32(snapshot.deviceID),
+            deviceUIDHash: hashAudioDeviceUID(snapshot.uid),
+            deviceName: snapshot.name,
+            transportType: snapshot.transportType,
+            nominalSampleRate: snapshot.nominalSampleRate,
+            inputChannelCount: snapshot.inputChannelCount,
+            startupAttemptCount: startupAttempt,
+            timeToFirstHALCallbackMs: backendKind == .coreAudioHAL ? firstHALCallbackMs : nil,
+            timeToFirstConvertedBufferMs: firstSamplesMs,
+            fallbackUsed: fallbackUsed,
+            errorCode: errorCode
+        )
     }
 
     // swiftlint:enable function_body_length
@@ -1343,7 +1028,12 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
             // Step 2: Remove the tap first to stop new audio from being processed
             // This is safer than stopping the engine immediately
-            if let engine = self.audioEngine {
+            if let backend = self.activeCaptureBackend {
+                await backend.stop()
+                self.activeCaptureBackend = nil
+                self.activeCaptureBackendKind = nil
+                logger.debug("[FluidAudio] Capture backend stopped")
+            } else if let engine = self.audioEngine {
                 engine.inputNode.removeTap(onBus: 0)
                 logger.debug("[FluidAudio] Audio tap removed")
             }
@@ -1370,7 +1060,10 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                 engine.stop()
             }
             self.audioEngine = nil
+            self.activeCaptureBackend = nil
+            self.activeCaptureBackendKind = nil
             self.tapProxy = nil
+            await self.idleActivationCoordinator.setRecordingActive(false)
 
             // Note: On macOS, we don't need to manually deactivate audio sessions
             // The system automatically manages audio resources when the engine stops
@@ -1420,7 +1113,19 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         safetyWatchdogTask = nil
 
         // Get final transcription and metrics from chunked recording manager
-        let (finalText, metrics) = await chunkedRecordingManager.finalize()
+        let (finalText, finalizedMetrics) = await chunkedRecordingManager.finalize()
+        let metrics = RecordingMetrics(
+            id: finalizedMetrics.id,
+            timestamp: finalizedMetrics.timestamp,
+            totalDuration: finalizedMetrics.totalDuration,
+            chunkCount: finalizedMetrics.chunkCount,
+            chunkDurations: finalizedMetrics.chunkDurations,
+            transcriptionTimes: finalizedMetrics.transcriptionTimes,
+            finalTextLength: finalizedMetrics.finalTextLength,
+            hadErrors: finalizedMetrics.hadErrors,
+            errorMessages: finalizedMetrics.errorMessages,
+            audioStartup: latestAudioStartupMetrics
+        )
 
         // Log metrics for debugging
         await MetricsLogger.shared.log(metrics)
