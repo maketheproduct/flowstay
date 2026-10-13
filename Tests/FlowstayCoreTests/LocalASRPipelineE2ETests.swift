@@ -28,7 +28,9 @@ final class LocalASRPipelineE2ETests: XCTestCase {
         let resampled = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: monoAtRate, frameCapacity: capacity))
         var fed = false
         _ = converter.convert(to: resampled, error: nil) { _, status in
-            if fed { status.pointee = .endOfStream; return nil }
+            if fed {
+                status.pointee = .endOfStream; return nil
+            }
             fed = true; status.pointee = .haveData; return mono
         }
         let layout = try XCTUnwrap(AVAudioChannelLayout(layoutTag: kAudioChannelLayoutTag_DiscreteInOrder | UInt32(channels)))
@@ -47,6 +49,10 @@ final class LocalASRPipelineE2ETests: XCTestCase {
     }
 
     private func transcribe(device: AVAudioPCMBuffer, forceBoundaryAtFraction: Double?) async throws -> String {
+        try await transcribe(device: device, forceBoundariesAt: forceBoundaryAtFraction.map { [$0] } ?? [])
+    }
+
+    private func transcribe(device: AVAudioPCMBuffer, forceBoundariesAt fractions: [Double]) async throws -> String {
         let models = try await AsrModels.loadFromCache()
         let asr = AsrManager(config: ASRConfig(sampleRate: 16000))
         try await asr.loadModels(models)
@@ -58,7 +64,7 @@ final class LocalASRPipelineE2ETests: XCTestCase {
         let converter = try XCTUnwrap(makeASRTapConverter(from: device.format, to: output))
         let slice: AVAudioFrameCount = 1024
         var offset: AVAudioFrameCount = 0
-        var forced = false
+        var pendingBoundaries = fractions.sorted()
         while offset < device.frameLength {
             let count = min(slice, device.frameLength - offset)
             let piece = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: device.format, frameCapacity: count))
@@ -70,8 +76,8 @@ final class LocalASRPipelineE2ETests: XCTestCase {
             let samples = Array(UnsafeBufferPointer(start: converted.floatChannelData![0], count: Int(converted.frameLength)))
             await manager.appendSamples(samples, hasAudioActivity: true)
             offset += count
-            if let fraction = forceBoundaryAtFraction, !forced, Double(offset) >= Double(device.frameLength) * fraction {
-                forced = true
+            if let fraction = pendingBoundaries.first, Double(offset) >= Double(device.frameLength) * fraction {
+                pendingBoundaries.removeFirst()
                 await manager.forceChunkBoundary()
             }
         }
@@ -112,5 +118,35 @@ final class LocalASRPipelineE2ETests: XCTestCase {
         assertTranscript(text)
         let words = text.lowercased().split(separator: " ")
         XCTAssertEqual(words.filter { $0.hasPrefix("fox") }.count, 1, "duplicated overlap: \(text)")
+    }
+
+    /// FLOWSTAY_E2E_MARKER_AUDIO: speech of "Marker one. <same sentence>" … "Marker seventy-two. …".
+    func testRepetitiveSpeechAcrossChunkBoundariesKeepsEveryMarkerOnce() async throws {
+        guard let path = ProcessInfo.processInfo.environment["FLOWSTAY_E2E_MARKER_AUDIO"] else {
+            throw XCTSkip("FLOWSTAY_E2E_MARKER_AUDIO not set")
+        }
+        let device = try makeDeviceBuffer(from: loadMono(path), rate: 48000, channels: 1, speechChannel: 0)
+        let text = try await transcribe(device: device, forceBoundariesAt: [0.34, 0.67]).lowercased()
+        print("E2E MARKER TRANSCRIPT: \(text)")
+
+        let units = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+        let teens = ["ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+        let tens = ["twenty", "thirty", "forty", "fifty", "sixty", "seventy"]
+        func spoken(_ number: Int) -> [String] {
+            let word: String = if number < 10 {
+                units[number - 1]
+            } else if number < 20 {
+                teens[number - 10]
+            } else {
+                tens[number / 10 - 2] + (number % 10 == 0 ? "" : "-" + units[number % 10 - 1])
+            }
+            return ["marker \(word)", "marker \(number)", "marker \(word.replacingOccurrences(of: "-", with: " "))"]
+        }
+        for number in 1 ... 72 {
+            let hits = spoken(number).map { form in
+                text.components(separatedBy: form + ".").count - 1 + text.components(separatedBy: form + ",").count - 1
+            }.max() ?? 0
+            XCTAssertEqual(hits, 1, "marker \(number) appears \(hits) times")
+        }
     }
 }
