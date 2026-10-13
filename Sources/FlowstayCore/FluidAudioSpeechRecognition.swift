@@ -94,7 +94,9 @@ private actor FluidAudioBufferProcessor {
     private let waveformNoiseFloorRms: Float
     private let visualizationUpdateMinimumInterval: TimeInterval
 
-    private var lastSpeechDetectedAt: Date?
+    private var lastStrongSpeechDetectedAt: Date?
+    /// Also refreshed by weak trailing syllables, so stopping waits for them.
+    private var lastSpeechActivityAt: Date?
     private var hasDetectedSpeechInCurrentSession = false
     private var lastVisualizationUpdateAt: Date?
     private var previousWaveformSamples: [Float] = []
@@ -118,14 +120,15 @@ private actor FluidAudioBufferProcessor {
     }
 
     func resetSession() {
-        lastSpeechDetectedAt = nil
+        lastStrongSpeechDetectedAt = nil
+        lastSpeechActivityAt = nil
         hasDetectedSpeechInCurrentSession = false
         lastVisualizationUpdateAt = nil
         previousWaveformSamples = []
     }
 
     func snapshot() -> AudioProcessingSnapshot {
-        AudioProcessingSnapshot(lastSpeechDetectedAt: lastSpeechDetectedAt)
+        AudioProcessingSnapshot(lastSpeechDetectedAt: lastSpeechActivityAt)
     }
 
     func process(
@@ -147,22 +150,27 @@ private actor FluidAudioBufferProcessor {
         let hasStrongSpeechSignal = computedRms > silenceThreshold || peakAmplitude > peakSpeechThreshold
         let hasWeakSpeechSignal = computedRms > lowSignalThreshold || peakAmplitude > (peakSpeechThreshold * 0.6)
 
-        let didDetectSpeechTransition: Bool
-        let hasAudioActivity: Bool
+        let speechActivity = SpeechActivityPolicy.resolve(
+            SpeechActivityInput(
+                hasStrongSpeechSignal: hasStrongSpeechSignal,
+                hasWeakSpeechSignal: hasWeakSpeechSignal,
+                observedAt: now,
+                lastStrongSpeechDetectedAt: lastStrongSpeechDetectedAt,
+                speechHangoverDuration: speechHangoverDuration
+            )
+        )
+        let hasAudioActivity = speechActivity.hasAudioActivity
+        let didDetectSpeechTransition = hasStrongSpeechSignal && !hasDetectedSpeechInCurrentSession
         if hasStrongSpeechSignal {
-            didDetectSpeechTransition = !hasDetectedSpeechInCurrentSession
             hasDetectedSpeechInCurrentSession = true
-            hasAudioActivity = true
-            lastSpeechDetectedAt = now
-        } else if let lastSpeechDetectedAt,
-                  now.timeIntervalSince(lastSpeechDetectedAt) <= speechHangoverDuration,
-                  hasWeakSpeechSignal
-        {
-            didDetectSpeechTransition = false
-            hasAudioActivity = true
-        } else {
-            didDetectSpeechTransition = false
-            hasAudioActivity = false
+        }
+        if speechActivity.shouldRefreshStrongSpeechAnchor {
+            lastStrongSpeechDetectedAt = now
+        }
+        if speechActivity.shouldRefreshStopFinalizationAnchor {
+            // A separate stop anchor lets weak trailing syllables extend finalization
+            // without letting the hangover gate sustain itself on low-level noise.
+            lastSpeechActivityAt = now
         }
 
         await chunkedRecordingManager.appendSamples(samples, hasAudioActivity: hasAudioActivity)
