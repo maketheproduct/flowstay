@@ -258,13 +258,6 @@ private actor FluidAudioBufferProcessor {
     }
 }
 
-enum FlushResult {
-    case completed
-    case iterationCapHit(iterations: Int)
-    case timeLimitHit(elapsed: TimeInterval, iterations: Int)
-    case conversionError
-}
-
 /// Errors that can occur during FluidAudio speech recognition
 public enum FluidAudioError: Error {
     case microphoneSetupFailed
@@ -294,8 +287,6 @@ private enum FluidAudioInternalError: LocalizedError {
     case downloadedModelsUnavailable
     case shuttingDown
     case asrUnavailable
-    case audioEngineCreationFailed
-    case audioEngineRecreationFailed
     case startupTimedOut
 
     var errorDescription: String? {
@@ -310,10 +301,6 @@ private enum FluidAudioInternalError: LocalizedError {
             "Speech recognition is shutting down."
         case .asrUnavailable:
             "FluidAudio ASR not available. Models may need to be downloaded."
-        case .audioEngineCreationFailed:
-            "Failed to create audio engine."
-        case .audioEngineRecreationFailed:
-            "Failed to recreate audio engine after forced prewarm."
         case .startupTimedOut:
             "Timed out waiting for audio from the selected input device. Try reconnecting the device and starting recording again."
         }
@@ -355,6 +342,16 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     /// Safety watchdog task — cancelled when real completion fires
     private var safetyWatchdogTask: Task<Void, Never>?
 
+    /// Stop/finalize work for the previous recording. A new recording waits for it
+    /// so it cannot wipe that recording's audio or have its capture stopped by it.
+    private var finalizationTask: Task<Void, Never>?
+    private var finalizationGeneration = 0
+
+    /// Captured samples are processed in order on one consumer task, which stop
+    /// drains before closing the final chunk.
+    private var sampleContinuation: AsyncStream<[Float]>.Continuation?
+    private var sampleConsumerTask: Task<Void, Never>?
+
     /// FluidAudio components - nonisolated(unsafe) because AsrManager/AsrModels aren't Sendable
     /// SAFETY: nonisolated(unsafe) for AsrManager/AsrModels because they don't conform to Sendable.
     /// Thread safety is guaranteed by MainActor isolation - all access to these properties
@@ -376,24 +373,15 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         waveformNoiseFloorRms: waveformNoiseFloorRms
     )
 
-    /// Audio components
-    private var audioEngine: AVAudioEngine?
-
     private var audioLevelTimer: Timer?
-
-    /// Audio tap proxy for non-isolated processing
-    private var tapProxy: FluidAudioTapProxy?
 
     /// Download monitoring task
     private var downloadMonitorTask: Task<Void, Never>?
-    private let audioInputDeviceMonitor = AudioInputDeviceMonitor()
-    private let idleActivationCoordinator: AudioInputActivationCoordinator
     private let halCaptureBackend: any AudioInputCaptureBackend
     private let avAudioEngineFallbackBackend: any AudioInputCaptureBackend
     private var activeCaptureBackend: (any AudioInputCaptureBackend)?
     private var activeCaptureBackendKind: AudioCaptureBackendKind?
     private var latestAudioStartupMetrics: AudioStartupMetrics?
-    private var latestIdleActivationMetrics: AudioInputActivationMetrics?
     /// One-way latch. After `shutdown()`, this instance is permanently unusable and
     /// subsequent entry points must bail out instead of attempting to rearm it.
     private var isShuttingDown = false
@@ -433,27 +421,19 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     init(
         appState: AppState? = nil,
         halCaptureBackend: any AudioInputCaptureBackend = CoreAudioHALInputCapture(),
-        avAudioEngineFallbackBackend: any AudioInputCaptureBackend = AVAudioEngineInputCaptureBackend(),
-        idleActivationCoordinator: AudioInputActivationCoordinator = AudioInputActivationCoordinator(
-            backend: CoreAudioHALInputCapture()
-        )
+        avAudioEngineFallbackBackend: any AudioInputCaptureBackend = AVAudioEngineInputCaptureBackend()
     ) {
         self.appState = appState
         self.halCaptureBackend = halCaptureBackend
         self.avAudioEngineFallbackBackend = avAudioEngineFallbackBackend
-        self.idleActivationCoordinator = idleActivationCoordinator
         super.init()
-        startAudioInputDeviceMonitor()
     }
 
     public convenience init(appState: AppState? = nil) {
         self.init(
             appState: appState,
             halCaptureBackend: CoreAudioHALInputCapture(),
-            avAudioEngineFallbackBackend: AVAudioEngineInputCaptureBackend(),
-            idleActivationCoordinator: AudioInputActivationCoordinator(
-                backend: CoreAudioHALInputCapture()
-            )
+            avAudioEngineFallbackBackend: AVAudioEngineInputCaptureBackend()
         )
     }
 
@@ -468,11 +448,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     public nonisolated func cleanup() {
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let proxy = tapProxy
             shutdown()
-            if let proxy {
-                await proxy.waitForPendingTasks()
-            }
             await drainAndResetAfterShutdown()
             logger.info("[FluidAudioSpeechRecognition] Cleaned up resources")
         }
@@ -492,13 +468,10 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         audioLevelTimer = nil
         silenceDetectionTimer?.invalidate()
         silenceDetectionTimer = nil
-        Task { [audioInputDeviceMonitor] in
-            await audioInputDeviceMonitor.stopListening()
-        }
-        Task { [idleActivationCoordinator] in
-            await idleActivationCoordinator.stop()
-        }
-        cleanupAudioEngine()
+        sampleContinuation?.finish()
+        sampleContinuation = nil
+        sampleConsumerTask?.cancel()
+        sampleConsumerTask = nil
         let backend = activeCaptureBackend
         activeCaptureBackend = nil
         activeCaptureBackendKind = nil
@@ -514,60 +487,6 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     func drainAndResetAfterShutdown() async {
         await audioBufferProcessor.resetSession()
         await chunkedRecordingManager.reset()
-    }
-
-    /// Safely cleanup audio engine with proper state checks
-    private func cleanupAudioEngine() {
-        guard let engine = audioEngine else {
-            tapProxy = nil
-            return
-        }
-
-        // Remove tap first (safe even if not installed)
-        engine.inputNode.removeTap(onBus: 0)
-
-        // Only stop if running
-        if engine.isRunning {
-            engine.stop()
-        }
-
-        audioEngine = nil
-        tapProxy = nil
-    }
-
-    private func startAudioInputDeviceMonitor() {
-        let monitor = audioInputDeviceMonitor
-        Task {
-            await monitor.startListening { event in
-                Task { @MainActor [weak self] in
-                    await self?.handleAudioInputDeviceChange(event)
-                }
-            }
-        }
-    }
-
-    private func handleAudioInputDeviceChange(_ event: AudioInputDeviceChangeEvent) async {
-        guard !isShuttingDown else {
-            return
-        }
-
-        guard AVAudioApplication.shared.recordPermission == .granted else {
-            logger.debug("[FluidAudioSpeechRecognition] Idle input activation skipped: microphone permission not granted")
-            return
-        }
-
-        if let snapshot = event.snapshot {
-            logger.info(
-                "[FluidAudioSpeechRecognition] Input device event \(event.reason.rawValue, privacy: .public): default device \(snapshot.deviceID, privacy: .public)"
-            )
-        } else {
-            logger.warning(
-                "[FluidAudioSpeechRecognition] Input device event \(event.reason.rawValue, privacy: .public): no default input snapshot"
-            )
-        }
-
-        await idleActivationCoordinator.requestProof(reason: event.reason)
-        latestIdleActivationMetrics = await (idleActivationCoordinator.recentMetrics()).first
     }
 
     private func waitForConvertedBuffer(
@@ -589,23 +508,6 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         }
 
         return observation.hasReceivedConvertedBuffer
-    }
-
-    private func logFlushResult(_ result: FlushResult, context: String) {
-        switch result {
-        case .completed:
-            logger.debug("[FluidAudioSpeechRecognition] EOS flush completed during \(context, privacy: .public)")
-        case let .iterationCapHit(iterations):
-            logger.fault(
-                "[FluidAudioSpeechRecognition] EOS flush hit iteration cap (\(iterations, privacy: .public)) during \(context, privacy: .public)"
-            )
-        case let .timeLimitHit(elapsed, iterations):
-            logger.fault(
-                "[FluidAudioSpeechRecognition] EOS flush hit time limit (\(elapsed, privacy: .public)s, \(iterations, privacy: .public) iterations) during \(context, privacy: .public)"
-            )
-        case .conversionError:
-            logger.fault("[FluidAudioSpeechRecognition] EOS flush conversion error during \(context, privacy: .public)")
-        }
     }
 
     /// Download models with retry logic and exponential backoff
@@ -664,7 +566,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             )
 
             asrManager = AsrManager(config: config)
-            try await asrManager?.initialize(models: loadedModels)
+            try await asrManager?.loadModels(loadedModels)
 
             // Configure chunked recording manager with ASR manager reference
             await chunkedRecordingManager.configure(asrManager: asrManager)
@@ -694,7 +596,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             )
 
             asrManager = AsrManager(config: config)
-            try await asrManager?.initialize(models: downloadedModels)
+            try await asrManager?.loadModels(downloadedModels)
 
             // Configure chunked recording manager with ASR manager reference
             await chunkedRecordingManager.configure(asrManager: asrManager)
@@ -707,7 +609,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
     @discardableResult
     public func prewarmRecordingPipeline() async -> Bool {
-        logger.debug("[FluidAudioSpeechRecognition] Audio prewarm skipped; idle activation proof and recording startup now open HAL just in time")
+        logger.debug("[FluidAudioSpeechRecognition] Audio prewarm skipped; the microphone only opens while recording")
         return false
     }
 
@@ -729,7 +631,15 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         if isRecording {
             logger.info("[FluidAudioSpeechRecognition] Already recording, stopping first...")
             stopRecording()
-            try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+        }
+
+        if let finalizationTask {
+            logger.info("[FluidAudioSpeechRecognition] Waiting for previous recording to finish before starting")
+            await finalizationTask.value
+        }
+
+        guard !isShuttingDown else {
+            throw FluidAudioInternalError.shuttingDown
         }
 
         // Reset all state for fresh transcription
@@ -746,76 +656,69 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             self.transcription = ""
         }
 
-        await idleActivationCoordinator.setRecordingActive(true)
-
-        do {
-            var didTryAVAudioEngineFallback = false
-            for startupAttempt in 1 ... maximumRecordingStartupAttempts {
-                let didStart: Bool
-                do {
-                    didStart = try await startCaptureAttempt(
+        var didTryAVAudioEngineFallback = false
+        for startupAttempt in 1 ... maximumRecordingStartupAttempts {
+            let didStart: Bool
+            do {
+                didStart = try await startCaptureAttempt(
+                    startupAttempt: startupAttempt,
+                    preferredBackend: halCaptureBackend,
+                    backendKind: .coreAudioHAL,
+                    fallbackUsed: false
+                )
+            } catch {
+                if startupAttempt == 1, !didTryAVAudioEngineFallback, shouldFallbackFromHALStartup(error) {
+                    didTryAVAudioEngineFallback = true
+                    logger.warning("[FluidAudioSpeechRecognition] HAL startup failed before activation; trying AVAudioEngine fallback once: \(error.localizedDescription, privacy: .public)")
+                    let fallbackDidStart = try await startCaptureAttempt(
                         startupAttempt: startupAttempt,
-                        preferredBackend: halCaptureBackend,
-                        backendKind: .coreAudioHAL,
-                        fallbackUsed: false
+                        preferredBackend: avAudioEngineFallbackBackend,
+                        backendKind: .avAudioEngineFallback,
+                        fallbackUsed: true
                     )
-                } catch {
-                    if startupAttempt == 1, !didTryAVAudioEngineFallback, shouldFallbackFromHALStartup(error) {
-                        didTryAVAudioEngineFallback = true
-                        logger.warning("[FluidAudioSpeechRecognition] HAL startup failed before activation; trying AVAudioEngine fallback once: \(error.localizedDescription, privacy: .public)")
-                        let fallbackDidStart = try await startCaptureAttempt(
-                            startupAttempt: startupAttempt,
-                            preferredBackend: avAudioEngineFallbackBackend,
-                            backendKind: .avAudioEngineFallback,
-                            fallbackUsed: true
-                        )
-                        if fallbackDidStart {
-                            logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
-                            return
-                        }
-
-                        throw FluidAudioInternalError.startupTimedOut
-                    }
-
-                    throw error
-                }
-
-                if didStart {
-                    logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
-                    return
-                }
-
-                guard shouldRetryRecordingStartupAfterInitialBufferTimeout(
-                    completedAttempts: startupAttempt,
-                    maximumAttempts: maximumRecordingStartupAttempts
-                ) else {
-                    if !didTryAVAudioEngineFallback {
-                        didTryAVAudioEngineFallback = true
-                        logger.warning("[FluidAudioSpeechRecognition] HAL startup timed out after callbacks without converted samples; trying AVAudioEngine fallback once")
-                        let fallbackDidStart = try await startCaptureAttempt(
-                            startupAttempt: maximumRecordingStartupAttempts + 1,
-                            preferredBackend: avAudioEngineFallbackBackend,
-                            backendKind: .avAudioEngineFallback,
-                            fallbackUsed: true
-                        )
-                        if fallbackDidStart {
-                            logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
-                            return
-                        }
+                    if fallbackDidStart {
+                        logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
+                        return
                     }
 
                     throw FluidAudioInternalError.startupTimedOut
                 }
 
-                logger.info("[FluidAudioSpeechRecognition] Retrying recording startup after activation timeout")
-                try? await Task.sleep(nanoseconds: recordingStartupRetryDelayNanoseconds)
+                throw error
             }
 
-            throw FluidAudioError.microphoneSetupFailed
-        } catch {
-            await idleActivationCoordinator.setRecordingActive(false)
-            throw error
+            if didStart {
+                logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
+                return
+            }
+
+            guard shouldRetryRecordingStartupAfterInitialBufferTimeout(
+                completedAttempts: startupAttempt,
+                maximumAttempts: maximumRecordingStartupAttempts
+            ) else {
+                if !didTryAVAudioEngineFallback {
+                    didTryAVAudioEngineFallback = true
+                    logger.warning("[FluidAudioSpeechRecognition] HAL startup timed out after callbacks without converted samples; trying AVAudioEngine fallback once")
+                    let fallbackDidStart = try await startCaptureAttempt(
+                        startupAttempt: maximumRecordingStartupAttempts + 1,
+                        preferredBackend: avAudioEngineFallbackBackend,
+                        backendKind: .avAudioEngineFallback,
+                        fallbackUsed: true
+                    )
+                    if fallbackDidStart {
+                        logger.debug("[FluidAudioSpeechRecognition] Waiting for audio data...")
+                        return
+                    }
+                }
+
+                throw FluidAudioInternalError.startupTimedOut
+            }
+
+            logger.info("[FluidAudioSpeechRecognition] Retrying recording startup after activation timeout")
+            try? await Task.sleep(nanoseconds: recordingStartupRetryDelayNanoseconds)
         }
+
+        throw FluidAudioError.microphoneSetupFailed
     }
 
     private func startCaptureAttempt(
@@ -833,27 +736,20 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         let startupStartedAt = Date()
 
         await chunkedRecordingManager.startRecording()
+        let sampleSink = startSampleConsumer()
         do {
             try await preferredBackend.start(
                 snapshot: snapshot,
                 onHALCallback: firstSamplesObservation.markHALCallback,
-                onSamples: { [weak self] samples in
+                onSamples: { samples in
                     guard !samples.isEmpty else { return }
                     firstSamplesObservation.markReceived()
-                    Task { @MainActor [weak self] in
-                        guard let self, !self.isShuttingDown else { return }
-                        let rms = sqrt(samples.map { $0 * $0 }.reduce(0, +) / Float(samples.count))
-                        let result = await audioBufferProcessor.process(
-                            samples: samples,
-                            rms: rms,
-                            suppressVisualization: false
-                        )
-                        applyProcessedAudioResult(result)
-                    }
+                    sampleSink.yield(samples)
                 }
             )
         } catch {
             await preferredBackend.stop()
+            await drainSampleConsumer()
             await chunkedRecordingManager.reset()
             latestAudioStartupMetrics = makeAudioStartupMetrics(
                 backendKind: backendKind,
@@ -883,6 +779,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             await preferredBackend.stop()
             activeCaptureBackend = nil
             activeCaptureBackendKind = nil
+            await drainSampleConsumer()
             await chunkedRecordingManager.reset()
             latestAudioStartupMetrics = makeAudioStartupMetrics(
                 backendKind: backendKind,
@@ -905,6 +802,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             await preferredBackend.stop()
             activeCaptureBackend = nil
             activeCaptureBackendKind = nil
+            await drainSampleConsumer()
             await chunkedRecordingManager.reset()
             return false
         }
@@ -924,6 +822,34 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         armSilenceDetection()
         logger.info("[FluidAudioSpeechRecognition] Recording started after verified sample delivery")
         return true
+    }
+
+    private func startSampleConsumer() -> AsyncStream<[Float]>.Continuation {
+        sampleContinuation?.finish()
+        let (stream, continuation) = AsyncStream<[Float]>.makeStream()
+        sampleContinuation = continuation
+        sampleConsumerTask = Task { @MainActor [weak self] in
+            for await samples in stream {
+                guard let self, !self.isShuttingDown else { return }
+                let rms = sqrt(samples.map { $0 * $0 }.reduce(0, +) / Float(samples.count))
+                let result = await audioBufferProcessor.process(
+                    samples: samples,
+                    rms: rms,
+                    suppressVisualization: false
+                )
+                applyProcessedAudioResult(result)
+            }
+        }
+        return continuation
+    }
+
+    /// Process every sample already delivered by the capture backend, then stop the consumer.
+    private func drainSampleConsumer() async {
+        sampleContinuation?.finish()
+        sampleContinuation = nil
+        let consumer = sampleConsumerTask
+        sampleConsumerTask = nil
+        await consumer?.value
     }
 
     private func shouldFallbackFromHALStartup(_ error: Error) -> Bool {
@@ -974,12 +900,10 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         stopAudioLevelMonitoring()
         stopSilenceDetectionTimer()
 
-        // Capture the tap proxy reference before cleanup
-        let proxy = tapProxy
-
         // Safety watchdog: if the cleanup chain below hasn't fired onTranscriptionComplete
         // within 40 seconds (must exceed 35s finalize timeout + margin), force-fire it so
         // the UI never gets stuck in "processing".
+        safetyWatchdogTask?.cancel()
         safetyWatchdogTask = Task { @MainActor [weak self, completionLock] in
             try? await Task.sleep(nanoseconds: 40_000_000_000)
             guard !Task.isCancelled else { return }
@@ -998,7 +922,16 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         // CRITICAL: Don't immediately stop audio engine
         // Audio tap has internal buffers that need time to be delivered
         // Stopping engine immediately would lose trailing audio
-        Task { @MainActor in
+        let previousFinalization = finalizationTask
+        finalizationGeneration += 1
+        let generation = finalizationGeneration
+        finalizationTask = Task { @MainActor in
+            await previousFinalization?.value
+            defer {
+                if self.finalizationGeneration == generation {
+                    self.finalizationTask = nil
+                }
+            }
             guard !isShuttingDown else {
                 logger.debug("[FluidAudio] stop finalization skipped because shutdown is in progress")
                 return
@@ -1026,54 +959,26 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             logger.debug("[FluidAudio] Waiting for audio tap buffer delivery...")
             try? await Task.sleep(nanoseconds: UInt64(stopDecision.delayBeforeTapRemoval * 1_000_000_000))
 
-            // Step 2: Remove the tap first to stop new audio from being processed
-            // This is safer than stopping the engine immediately
+            // Step 2: Stop capture (closing the microphone) and flush the converter tail.
             if let backend = self.activeCaptureBackend {
                 await backend.stop()
                 self.activeCaptureBackend = nil
                 self.activeCaptureBackendKind = nil
                 logger.debug("[FluidAudio] Capture backend stopped")
-            } else if let engine = self.audioEngine {
-                engine.inputNode.removeTap(onBus: 0)
-                logger.debug("[FluidAudio] Audio tap removed")
             }
 
-            // Step 3: Flush any residual converter output after tap removal.
-            logger.debug("[FluidAudio] Flushing converter end-of-stream")
-            if let proxy {
-                let flushResult = await proxy.flushEndOfStream()
-                logFlushResult(flushResult, context: "recording stop")
-            }
-
-            // Step 4: Wait for ALL pending audio processing tasks to complete
-            // This is the key fix - ensures no audio samples are lost in transit
-            if let proxy {
-                await proxy.waitForPendingTasks()
-            }
+            // Step 3: Process every sample delivered before the stop, in order.
+            await self.drainSampleConsumer()
 
             let finalChunkSampleCount = await self.chunkedRecordingManager.getCurrentBufferSize()
             await self.chunkedRecordingManager.forceChunkBoundary()
-
-            // Step 5: NOW clean up audio engine safely (all audio has been processed)
-            logger.debug("[FluidAudio] Cleaning up audio engine...")
-            if let engine = self.audioEngine, engine.isRunning {
-                engine.stop()
-            }
-            self.audioEngine = nil
-            self.activeCaptureBackend = nil
-            self.activeCaptureBackendKind = nil
-            self.tapProxy = nil
-            await self.idleActivationCoordinator.setRecordingActive(false)
-
-            // Note: On macOS, we don't need to manually deactivate audio sessions
-            // The system automatically manages audio resources when the engine stops
 
             guard !isShuttingDown else {
                 logger.debug("[FluidAudio] Suppressing final transcription delivery during shutdown")
                 return
             }
 
-            // Step 6: Finalize chunked recording and get complete transcription
+            // Step 4: Finalize chunked recording and get complete transcription
             await self.finalizeChunkedTranscription(
                 diagnostics: StopFinalizationDiagnostics(
                     stopRequestedAt: stopRequestedAt,
@@ -1243,371 +1148,4 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     // Removed silence buffer injection - it was causing buffer corruption
 
     // MARK: - Audio Device Helpers
-}
-
-// MARK: - Audio Tap Proxy
-
-/// Non-isolated proxy to handle audio tap callbacks without MainActor isolation
-/// SAFETY: @unchecked Sendable is used because:
-/// 1. Audio tap callbacks occur on audio render threads (not the main thread)
-/// 2. Shared mutable state (pendingTaskCount, allTasksCompletedContinuation) is protected by NSLock
-/// 3. The owner reference is weak and only accessed for dispatching to MainActor
-/// 4. The converter and outputFormat are immutable after initialization
-final class FluidAudioTapProxy: @unchecked Sendable {
-    /// SAFETY: nonisolated(unsafe) because the owner is MainActor-isolated and we only
-    /// dispatch back to it asynchronously. The weak reference prevents retain cycles.
-    private nonisolated(unsafe) weak var owner: FluidAudioSpeechRecognition?
-    private let audioBufferProcessor: FluidAudioBufferProcessor?
-    private let converter: AVAudioConverter
-    private let outputFormat: AVAudioFormat
-    private let preferredOutputFrameCapacity: AVAudioFrameCount
-    private let onFirstConvertedBuffer: (@Sendable () -> Void)?
-    private let logger = Logger(subsystem: "com.flowstay.app", category: "FluidAudioTapProxy")
-    private let converterLock = NSLock()
-    private let firstConvertedBufferLock = NSLock()
-    private let flushQueue = DispatchQueue(label: "com.flowstay.app.audio.tap-proxy.flush")
-    private let processingBackpressureThreshold = 32
-    private let tapCountLock = OSAllocatedUnfairLock()
-    /// SAFETY: nonisolated(unsafe) to allow use from audio render thread
-    /// with explicit locking where needed. `tapCount` is protected by `tapCountLock`.
-    private nonisolated(unsafe) var tapCount = 0
-    private nonisolated(unsafe) var didSignalFirstConvertedBuffer = false
-    private nonisolated(unsafe) var hasLoggedUIBackpressureThisSession = false
-
-    /// Track pending audio processing tasks to ensure all audio is processed before finalization
-    private let pendingTasksLock = NSLock()
-    private nonisolated(unsafe) var pendingTaskCount: Int = 0
-
-    /// Signal when all pending tasks have completed
-    private nonisolated(unsafe) var allTasksCompletedContinuation: CheckedContinuation<Bool, Never>?
-
-    fileprivate init?(
-        owner: FluidAudioSpeechRecognition,
-        audioBufferProcessor: FluidAudioBufferProcessor?,
-        inputFormat: AVAudioFormat,
-        outputFormat: AVAudioFormat,
-        onFirstConvertedBuffer: (@Sendable () -> Void)? = nil
-    ) {
-        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
-            // Cannot use self.logger before all stored properties are initialized,
-            // so use a local Logger instance for the early-return path.
-            Logger(subsystem: "com.flowstay.app", category: "FluidAudioTapProxy")
-                .error("[FluidAudioTapProxy] Failed to create audio converter from \(inputFormat.sampleRate, privacy: .public)Hz to \(outputFormat.sampleRate, privacy: .public)Hz")
-            return nil
-        }
-        self.owner = owner
-        self.audioBufferProcessor = audioBufferProcessor
-        self.outputFormat = outputFormat
-        self.converter = converter
-        preferredOutputFrameCapacity = convertedOutputFrameCapacity(
-            inputFrameCount: 1024,
-            inputSampleRate: inputFormat.sampleRate,
-            outputSampleRate: outputFormat.sampleRate
-        )
-        self.onFirstConvertedBuffer = onFirstConvertedBuffer
-
-        logger.info("[FluidAudioTapProxy] Initialized - converting \(inputFormat.sampleRate, privacy: .public)Hz to \(outputFormat.sampleRate, privacy: .public)Hz")
-    }
-
-    /// Wait for all pending audio processing tasks to complete (with 5-second timeout).
-    /// If a pending task crashes before calling `decrementPendingTasks()`, the
-    /// continuation would never resume — the timeout prevents an infinite hang.
-    func waitForPendingTasks() async {
-        let count = pendingTasksLock.withLock { pendingTaskCount }
-        if count == 0 {
-            logger.debug("[FluidAudioTapProxy] No pending tasks to wait for")
-            return
-        }
-
-        logger.info("[FluidAudioTapProxy] Waiting for \(count) pending audio processing tasks...")
-
-        let didComplete = await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
-            // Try to register our continuation
-            let alreadyDone = pendingTasksLock.withLock { () -> Bool in
-                if pendingTaskCount == 0 {
-                    return true
-                }
-                allTasksCompletedContinuation = continuation
-                return false
-            }
-
-            if alreadyDone {
-                continuation.resume(returning: true)
-                return
-            }
-
-            // Start a timeout watchdog — if the continuation hasn't been resumed in 5s, force it.
-            Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
-                guard let self else { return }
-                pendingTasksLock.withLock {
-                    if let stale = self.allTasksCompletedContinuation {
-                        self.allTasksCompletedContinuation = nil
-                        stale.resume(returning: false)
-                    }
-                }
-            }
-        }
-
-        if didComplete {
-            logger.info("[FluidAudioTapProxy] All pending tasks completed")
-        } else {
-            let remaining = pendingTasksLock.withLock { pendingTaskCount }
-            logger.warning("[FluidAudioTapProxy] Timed out waiting for \(remaining) pending tasks — continuing anyway")
-        }
-    }
-
-    /// Increment pending task count
-    private nonisolated func incrementPendingTasks() -> Int {
-        pendingTasksLock.withLock {
-            pendingTaskCount += 1
-            return pendingTaskCount
-        }
-    }
-
-    /// Decrement pending task count and signal completion if zero
-    private nonisolated func decrementPendingTasks() {
-        pendingTasksLock.withLock {
-            pendingTaskCount -= 1
-            if pendingTaskCount == 0, let continuation = allTasksCompletedContinuation {
-                allTasksCompletedContinuation = nil
-                continuation.resume(returning: true)
-            }
-        }
-    }
-
-    private nonisolated func signalFirstConvertedBufferIfNeeded() {
-        let shouldSignal = firstConvertedBufferLock.withLock { () -> Bool in
-            guard !didSignalFirstConvertedBuffer else {
-                return false
-            }
-
-            didSignalFirstConvertedBuffer = true
-            return true
-        }
-
-        if shouldSignal {
-            onFirstConvertedBuffer?()
-        }
-    }
-
-    @discardableResult
-    private nonisolated func emitConvertedBuffer(
-        _ convertedBuffer: AVAudioPCMBuffer,
-        sourceDescription: String,
-        logTapMetrics: Bool
-    ) -> Bool {
-        guard let channelData = convertedBuffer.floatChannelData,
-              convertedBuffer.frameLength > 0
-        else {
-            logger.debug("[FluidAudioTapProxy] \(sourceDescription, privacy: .public): no channel data or zero frame length")
-            return false
-        }
-
-        signalFirstConvertedBufferIfNeeded()
-
-        guard let audioBufferProcessor else {
-            if logTapMetrics {
-                logger.debug("[FluidAudioTapProxy] \(sourceDescription, privacy: .public): converted buffer observed during prewarm")
-            }
-            return true
-        }
-
-        let samples = Array(UnsafeBufferPointer(
-            start: channelData.pointee,
-            count: Int(convertedBuffer.frameLength)
-        ))
-
-        let rms = sqrt(samples.map { $0 * $0 }.reduce(0, +) / Float(samples.count))
-
-        if logTapMetrics {
-            let maxAmplitude = samples.map { abs($0) }.max() ?? 0
-            logger.debug(
-                "[FluidAudioTapProxy] \(sourceDescription, privacy: .public): \(samples.count, privacy: .public) samples, max amplitude: \(maxAmplitude, privacy: .public), RMS: \(rms, privacy: .public)"
-            )
-        }
-
-        let pendingCount = incrementPendingTasks()
-        let suppressVisualization = pendingCount > processingBackpressureThreshold
-        if suppressVisualization {
-            let shouldLog = pendingTasksLock.withLock { () -> Bool in
-                guard !hasLoggedUIBackpressureThisSession else {
-                    return false
-                }
-                hasLoggedUIBackpressureThisSession = true
-                return true
-            }
-
-            if shouldLog {
-                logger.warning(
-                    "[FluidAudioTapProxy] UI backpressure activated at \(pendingCount, privacy: .public) pending tasks; preserving transcription and skipping visualization updates"
-                )
-            }
-        }
-
-        Task { [weak self, weak owner] in
-            defer { self?.decrementPendingTasks() }
-            let result = await audioBufferProcessor.process(
-                samples: samples,
-                rms: rms,
-                suppressVisualization: suppressVisualization
-            )
-            guard result.requiresMainActorUpdate, let owner else { return }
-            await owner.applyProcessedAudioResult(result)
-        }
-
-        return true
-    }
-
-    nonisolated func handleTap(buffer: AVAudioPCMBuffer, time _: AVAudioTime) {
-        let currentTapCount = tapCountLock.withLock { () -> Int in
-            tapCount += 1
-            return tapCount
-        }
-        let shouldLogTapMetrics = currentTapCount <= 10 || currentTapCount % 10 == 0
-
-        // Log every tap for debugging microphone issues
-        if shouldLogTapMetrics {
-            logger.debug("[FluidAudioTapProxy] Tap #\(currentTapCount, privacy: .public): buffer frameLength=\(buffer.frameLength, privacy: .public), format=\(buffer.format, privacy: .public)")
-        }
-
-        // Convert to 16kHz mono
-        let frameCapacity = convertedOutputFrameCapacity(
-            inputFrameCount: buffer.frameLength,
-            inputSampleRate: buffer.format.sampleRate,
-            outputSampleRate: outputFormat.sampleRate
-        )
-        #if DEBUG
-            if shouldLogTapMetrics {
-                // swiftformat:disable redundantSelf
-                // swiftlint:disable line_length
-                logger.debug(
-                    "[FluidAudioTapProxy] Tap #\(currentTapCount, privacy: .public): allocating \(frameCapacity, privacy: .public) output frames for \(buffer.frameLength, privacy: .public) input frames at \(buffer.format.sampleRate, privacy: .public)Hz -> \(self.outputFormat.sampleRate, privacy: .public)Hz"
-                )
-                // swiftlint:enable line_length
-                // swiftformat:enable redundantSelf
-            }
-        #endif
-        guard let convertedBuffer = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: frameCapacity) else {
-            logger.error("[FluidAudioTapProxy] Failed to create converted buffer")
-            return
-        }
-
-        var error: NSError?
-        let status: AVAudioConverterOutputStatus = converterLock.withLock {
-            converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
-                outStatus.pointee = .haveData
-                return buffer
-            }
-        }
-
-        if let error {
-            if shouldLogTapMetrics {
-                logger.error("[FluidAudioTapProxy] Conversion error: \(error, privacy: .public)")
-            }
-            return
-        }
-
-        if status != .haveData, shouldLogTapMetrics {
-            logger.debug(
-                "[FluidAudioTapProxy] Tap #\(currentTapCount, privacy: .public): conversion returned status \(String(describing: status), privacy: .public)"
-            )
-        }
-
-        _ = emitConvertedBuffer(
-            convertedBuffer,
-            sourceDescription: "Tap #\(currentTapCount)",
-            logTapMetrics: shouldLogTapMetrics
-        )
-    }
-
-    func flushEndOfStream(
-        maxIterations: Int = 100,
-        maxDuration: TimeInterval = 1.0
-    ) async -> FlushResult {
-        await withCheckedContinuation { continuation in
-            flushQueue.async { [weak self] in
-                guard let self else {
-                    continuation.resume(returning: .completed)
-                    return
-                }
-
-                continuation.resume(returning: performEndOfStreamFlush(
-                    maxIterations: maxIterations,
-                    maxDuration: maxDuration
-                ))
-            }
-        }
-    }
-
-    private nonisolated func performEndOfStreamFlush(
-        maxIterations: Int,
-        maxDuration: TimeInterval
-    ) -> FlushResult {
-        logger.debug("[FluidAudioTapProxy] Starting converter EOS flush")
-
-        let startedAt = Date()
-        var iteration = 0
-
-        while iteration < maxIterations {
-            if Date().timeIntervalSince(startedAt) >= maxDuration {
-                return .timeLimitHit(
-                    elapsed: Date().timeIntervalSince(startedAt),
-                    iterations: iteration
-                )
-            }
-
-            iteration += 1
-
-            guard let convertedBuffer = AVAudioPCMBuffer(
-                pcmFormat: outputFormat,
-                frameCapacity: preferredOutputFrameCapacity
-            ) else {
-                logger.error("[FluidAudioTapProxy] Failed to create EOS flush buffer")
-                return .conversionError
-            }
-
-            var error: NSError?
-            let status: AVAudioConverterOutputStatus = converterLock.withLock {
-                converter.convert(to: convertedBuffer, error: &error) { _, outStatus in
-                    outStatus.pointee = .endOfStream
-                    return nil
-                }
-            }
-
-            if let error {
-                logger.error("[FluidAudioTapProxy] EOS flush conversion error: \(error, privacy: .public)")
-                return .conversionError
-            }
-
-            if convertedBuffer.frameLength > 0 {
-                logger.debug(
-                    "[FluidAudioTapProxy] EOS flush iteration \(iteration, privacy: .public) emitted \(convertedBuffer.frameLength, privacy: .public) frames"
-                )
-                _ = emitConvertedBuffer(
-                    convertedBuffer,
-                    sourceDescription: "EOS flush #\(iteration)",
-                    logTapMetrics: true
-                )
-            } else {
-                logger.debug("[FluidAudioTapProxy] EOS flush iteration \(iteration, privacy: .public) emitted no frames")
-            }
-
-            if status != .haveData || convertedBuffer.frameLength == 0 {
-                return .completed
-            }
-        }
-
-        return .iterationCapHit(iterations: iteration)
-    }
-}
-
-/// Non-isolated helper to install tap without MainActor isolation
-private func installFluidAudioTap(
-    inputNode: AVAudioInputNode,
-    bufferSize: AVAudioFrameCount,
-    format: AVAudioFormat,
-    proxy: FluidAudioTapProxy
-) {
-    inputNode.installTap(onBus: 0, bufferSize: bufferSize, format: format, block: proxy.handleTap(buffer:time:))
 }

@@ -29,21 +29,6 @@ enum AudioCaptureBackendKind: String {
     case avAudioEngineFallback
 }
 
-enum AudioInputDeviceChangeReason: String, Codable {
-    case appStart
-    case defaultInputChanged
-    case devicesChanged
-    case serviceRestarted
-    case deviceAliveChanged
-    case sampleRateChanged
-    case postRecordingPending
-}
-
-struct AudioInputDeviceChangeEvent {
-    let reason: AudioInputDeviceChangeReason
-    let snapshot: AudioInputDeviceSnapshot?
-}
-
 struct AudioInputDeviceSnapshot: Equatable {
     let deviceID: AudioDeviceID
     let uid: String?
@@ -51,49 +36,6 @@ struct AudioInputDeviceSnapshot: Equatable {
     let transportType: UInt32?
     let nominalSampleRate: Double
     let inputChannelCount: UInt32
-}
-
-public struct AudioInputActivationMetrics: Codable, Sendable {
-    public let reason: String
-    public let deviceID: UInt32
-    public let deviceUIDHash: String?
-    public let deviceName: String?
-    public let transportType: UInt32?
-    public let nominalSampleRate: Double
-    public let inputChannelCount: UInt32
-    public let attemptCount: Int
-    public let timeToFirstHALCallbackMs: Double?
-    public let timeToFirstConvertedBufferMs: Double?
-    public let succeeded: Bool
-    public let errorCode: Int32?
-
-    public init(
-        reason: String,
-        deviceID: UInt32,
-        deviceUIDHash: String?,
-        deviceName: String?,
-        transportType: UInt32?,
-        nominalSampleRate: Double,
-        inputChannelCount: UInt32,
-        attemptCount: Int,
-        timeToFirstHALCallbackMs: Double?,
-        timeToFirstConvertedBufferMs: Double?,
-        succeeded: Bool,
-        errorCode: Int32?
-    ) {
-        self.reason = reason
-        self.deviceID = deviceID
-        self.deviceUIDHash = deviceUIDHash
-        self.deviceName = deviceName
-        self.transportType = transportType
-        self.nominalSampleRate = nominalSampleRate
-        self.inputChannelCount = inputChannelCount
-        self.attemptCount = attemptCount
-        self.timeToFirstHALCallbackMs = timeToFirstHALCallbackMs
-        self.timeToFirstConvertedBufferMs = timeToFirstConvertedBufferMs
-        self.succeeded = succeeded
-        self.errorCode = errorCode
-    }
 }
 
 public struct AudioStartupMetrics: Codable, Sendable {
@@ -139,133 +81,10 @@ public struct AudioStartupMetrics: Codable, Sendable {
     }
 }
 
-actor AudioInputDeviceMonitor {
-    private let logger = Logger(subsystem: "com.flowstay.app", category: "AudioInputDeviceMonitor")
-    private let queue = DispatchQueue(label: "com.flowstay.app.audio.input-device-monitor")
-    private struct ListenerToken {
-        let objectID: AudioObjectID
-        let address: AudioObjectPropertyAddress
-        let listener: AudioObjectPropertyListenerBlock
-    }
-
-    private var listenerTokens: [String: ListenerToken] = [:]
-    private var onChange: (@Sendable (AudioInputDeviceChangeEvent) -> Void)?
-    private var defaultDeviceListenerID: AudioDeviceID?
-
-    func currentDefaultInputSnapshot() throws -> AudioInputDeviceSnapshot {
-        try AudioInputDeviceMonitor.snapshotForCurrentDefaultInput()
-    }
-
-    func startListening(onChange: @Sendable @escaping (AudioInputDeviceChangeEvent) -> Void) {
-        self.onChange = onChange
-        registerSystemListener(selector: kAudioHardwarePropertyDefaultInputDevice, reason: .defaultInputChanged)
-        registerSystemListener(selector: kAudioHardwarePropertyDevices, reason: .devicesChanged)
-        registerSystemListener(selector: kAudioHardwarePropertyServiceRestarted, reason: .serviceRestarted)
-
-        let snapshot = try? Self.snapshotForCurrentDefaultInput()
-        refreshDefaultDeviceListeners(for: snapshot?.deviceID)
-        onChange(AudioInputDeviceChangeEvent(reason: .appStart, snapshot: snapshot))
-    }
-
-    func stopListening() {
-        for token in listenerTokens.values {
-            var mutableAddress = token.address
-            AudioObjectRemovePropertyListenerBlock(token.objectID, &mutableAddress, queue, token.listener)
-        }
-        listenerTokens.removeAll()
-        defaultDeviceListenerID = nil
-        onChange = nil
-    }
-
-    nonisolated static func snapshotForCurrentDefaultInput() throws -> AudioInputDeviceSnapshot {
+enum AudioInputDeviceMonitor {
+    static func snapshotForCurrentDefaultInput() throws -> AudioInputDeviceSnapshot {
         let deviceID = try currentDefaultInputDeviceID()
         return try snapshot(for: deviceID)
-    }
-
-    static func systemPropertyAddress(selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-    }
-
-    static func devicePropertyAddress(selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(
-            mSelector: selector,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-    }
-
-    private func registerSystemListener(
-        selector: AudioObjectPropertySelector,
-        reason: AudioInputDeviceChangeReason
-    ) {
-        var address = Self.systemPropertyAddress(selector: selector)
-        register(objectID: AudioObjectID(kAudioObjectSystemObject), address: &address, reason: reason)
-    }
-
-    private func registerDeviceListener(
-        deviceID: AudioDeviceID,
-        selector: AudioObjectPropertySelector,
-        reason: AudioInputDeviceChangeReason
-    ) {
-        var address = Self.devicePropertyAddress(selector: selector)
-        register(objectID: AudioObjectID(deviceID), address: &address, reason: reason)
-    }
-
-    private func register(
-        objectID: AudioObjectID,
-        address: inout AudioObjectPropertyAddress,
-        reason: AudioInputDeviceChangeReason
-    ) {
-        let key = listenerKey(objectID: objectID, address: address)
-        guard listenerTokens[key] == nil else { return }
-        let storedAddress = address
-        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
-            Task { [weak self] in
-                guard let self else { return }
-                let snapshot = try? Self.snapshotForCurrentDefaultInput()
-                await refreshDefaultDeviceListeners(for: snapshot?.deviceID)
-                await onChange?(AudioInputDeviceChangeEvent(reason: reason, snapshot: snapshot))
-            }
-        }
-
-        let status = AudioObjectAddPropertyListenerBlock(objectID, &address, queue, listener)
-        guard status == noErr else {
-            logger.error("[AudioInputDeviceMonitor] Failed to add listener \(storedAddress.mSelector, privacy: .public): \(status, privacy: .public)")
-            return
-        }
-        listenerTokens[key] = ListenerToken(objectID: objectID, address: storedAddress, listener: listener)
-    }
-
-    private func listenerKey(objectID: AudioObjectID, address: AudioObjectPropertyAddress) -> String {
-        "\(objectID)-\(address.mSelector)-\(address.mScope)-\(address.mElement)"
-    }
-
-    private func refreshDefaultDeviceListeners(for deviceID: AudioDeviceID?) {
-        guard defaultDeviceListenerID != deviceID else { return }
-
-        removeDefaultDeviceListeners()
-        defaultDeviceListenerID = deviceID
-
-        guard let deviceID else { return }
-        registerDeviceListener(deviceID: deviceID, selector: kAudioDevicePropertyDeviceIsAlive, reason: .deviceAliveChanged)
-        registerDeviceListener(deviceID: deviceID, selector: kAudioDevicePropertyNominalSampleRate, reason: .sampleRateChanged)
-    }
-
-    private func removeDefaultDeviceListeners() {
-        let systemObject = AudioObjectID(kAudioObjectSystemObject)
-        let deviceTokens = listenerTokens.filter { $0.value.objectID != systemObject }
-
-        for (key, token) in deviceTokens {
-            var mutableAddress = token.address
-            AudioObjectRemovePropertyListenerBlock(token.objectID, &mutableAddress, queue, token.listener)
-            listenerTokens.removeValue(forKey: key)
-        }
-
-        defaultDeviceListenerID = nil
     }
 }
 
@@ -411,6 +230,8 @@ final actor CoreAudioHALInputCapture: AudioInputCaptureBackend {
 
 final actor AVAudioEngineInputCaptureBackend: AudioInputCaptureBackend {
     private var engine: AVAudioEngine?
+    private var converter: AudioSampleConverter?
+    private var onSamples: (@Sendable ([Float]) -> Void)?
 
     nonisolated func currentDefaultInputSnapshot() throws -> AudioInputDeviceSnapshot {
         try AudioInputDeviceMonitor.snapshotForCurrentDefaultInput()
@@ -437,6 +258,8 @@ final actor AVAudioEngineInputCaptureBackend: AudioInputCaptureBackend {
         engine.prepare()
         try engine.start()
         self.engine = engine
+        self.converter = converter
+        self.onSamples = onSamples
     }
 
     func stop() async {
@@ -445,7 +268,15 @@ final actor AVAudioEngineInputCaptureBackend: AudioInputCaptureBackend {
         if engine.isRunning {
             engine.stop()
         }
+        if let converter, let onSamples {
+            let samples = converter.flushEndOfStream()
+            if !samples.isEmpty {
+                onSamples(samples)
+            }
+        }
         self.engine = nil
+        converter = nil
+        onSamples = nil
     }
 }
 
@@ -529,7 +360,6 @@ private final class CoreAudioHALRenderBox: @unchecked Sendable {
     private let bufferPool: [BufferSlot]
     private var diagnosticsLogged = 0
     private var droppedBuffers = 0
-    private var isStopping = false
 
     init(
         audioUnit: AudioUnit,
@@ -593,7 +423,6 @@ private final class CoreAudioHALRenderBox: @unchecked Sendable {
         conversionQueue.async { [weak self, slot] in
             guard let self else { return }
             defer { self.releaseBuffer(slot) }
-            guard !isStopping else { return }
             guard let samples = converter.convert(buffer: inputBuffer), !samples.isEmpty else {
                 logDiagnostic(
                     "Converted buffer was empty callbackBus=\(busNumber) renderBus=\(inputBus) frames=\(frameCount) format=\(inputFormat.description)"
@@ -605,8 +434,9 @@ private final class CoreAudioHALRenderBox: @unchecked Sendable {
         return noErr
     }
 
+    /// Call after the audio unit has stopped: converts buffers still queued, then
+    /// flushes the converter so the end of the recording is not dropped.
     func stopAndFlush() {
-        isStopping = true
         conversionQueue.sync {
             let samples = converter.flushEndOfStream()
             if !samples.isEmpty {
@@ -661,7 +491,7 @@ private final class AudioSampleConverter: @unchecked Sendable {
             channels: 1,
             interleaved: false
         ),
-            let converter = AVAudioConverter(from: inputFormat, to: outputFormat)
+            let converter = makeASRTapConverter(from: inputFormat, to: outputFormat)
         else {
             throw AudioCaptureError.converterUnavailable
         }
@@ -675,15 +505,20 @@ private final class AudioSampleConverter: @unchecked Sendable {
     }
 
     func convert(buffer: AVAudioPCMBuffer) -> [Float]? {
-        let frameCapacity = convertedOutputFrameCapacity(
-            inputFrameCount: buffer.frameLength,
-            inputSampleRate: buffer.format.sampleRate,
-            outputSampleRate: outputFormat.sampleRate
-        )
-        return convert(frameCapacity: frameCapacity) { _, outStatus in
-            outStatus.pointee = .haveData
-            return buffer
+        let convertedBuffer = lock.withLock {
+            convertTapBufferToASRMono(buffer, converter: converter, outputFormat: outputFormat)
         }
+        guard let convertedBuffer else {
+            return nil
+        }
+        guard let channelData = convertedBuffer.floatChannelData, convertedBuffer.frameLength > 0 else {
+            return []
+        }
+
+        return Array(UnsafeBufferPointer(
+            start: channelData.pointee,
+            count: Int(convertedBuffer.frameLength)
+        ))
     }
 
     func flushEndOfStream(maxIterations: Int = 100) -> [Float] {
@@ -843,471 +678,4 @@ func hashAudioDeviceUID(_ uid: String?) -> String? {
     guard let uid else { return nil }
     let digest = SHA256.hash(data: Data(uid.utf8))
     return digest.map { String(format: "%02x", $0) }.joined()
-}
-
-actor AudioInputActivationCoordinator {
-    private let backend: any AudioInputCaptureBackend
-    private let logger = Logger(subsystem: "com.flowstay.app", category: "AudioInputActivationCoordinator")
-    private let debounceNanoseconds: UInt64
-    private let timeout: TimeInterval
-    private let maximumAttempts: Int
-    private let retryDelayNanoseconds: UInt64
-    private let persistMetrics: Bool
-    private let maxStoredMetrics = 25
-
-    private var recordingActive = false
-    private var hasPendingPostRecordingProof = false
-    private var debounceTask: Task<Void, Never>?
-    private var proofTask: Task<Void, Never>?
-    private var scheduledWorkGeneration = 0
-    private var recentActivationMetrics: [AudioInputActivationMetrics] = []
-
-    init(
-        backend: any AudioInputCaptureBackend,
-        debounceNanoseconds: UInt64 = 350_000_000,
-        timeout: TimeInterval = 1.5,
-        maximumAttempts: Int = 2,
-        retryDelayNanoseconds: UInt64 = 200_000_000,
-        persistMetrics: Bool = true
-    ) {
-        self.backend = backend
-        self.debounceNanoseconds = debounceNanoseconds
-        self.timeout = timeout
-        self.maximumAttempts = maximumAttempts
-        self.retryDelayNanoseconds = retryDelayNanoseconds
-        self.persistMetrics = persistMetrics
-    }
-
-    func requestProof(reason: AudioInputDeviceChangeReason) {
-        guard !recordingActive else {
-            hasPendingPostRecordingProof = true
-            logger.debug("[AudioInputActivationCoordinator] Deferring idle activation proof until recording stops")
-            return
-        }
-
-        scheduleProof(reason: reason)
-    }
-
-    func setRecordingActive(_ active: Bool) async {
-        recordingActive = active
-
-        if active {
-            cancelScheduledWork()
-            await backend.stop()
-            return
-        }
-
-        guard hasPendingPostRecordingProof else { return }
-        hasPendingPostRecordingProof = false
-        scheduleProof(reason: .postRecordingPending)
-    }
-
-    @discardableResult
-    func proveNow(reason: AudioInputDeviceChangeReason) async -> AudioInputActivationMetrics {
-        cancelScheduledWork()
-        await backend.stop()
-        let metric = await performActivationProof(reason: reason)
-        await record(metric)
-        return metric
-    }
-
-    func stop() async {
-        cancelScheduledWork()
-        hasPendingPostRecordingProof = false
-        recordingActive = false
-        await backend.stop()
-    }
-
-    func recentMetrics() -> [AudioInputActivationMetrics] {
-        recentActivationMetrics
-    }
-
-    func waitForScheduledWork() async {
-        while true {
-            let debounce = debounceTask
-            let proof = proofTask
-
-            if debounce == nil, proof == nil {
-                return
-            }
-
-            await debounce?.value
-            await proof?.value
-            try? await Task.sleep(nanoseconds: 1_000_000)
-        }
-    }
-
-    private func scheduleProof(reason: AudioInputDeviceChangeReason) {
-        debounceTask?.cancel()
-        proofTask?.cancel()
-
-        scheduledWorkGeneration += 1
-        let generation = scheduledWorkGeneration
-        let delayNanoseconds = debounceNanoseconds
-        debounceTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await Task.sleep(nanoseconds: delayNanoseconds)
-            } catch {
-                await clearDebounceTask(generation: generation)
-                return
-            }
-
-            guard !Task.isCancelled else {
-                await clearDebounceTask(generation: generation)
-                return
-            }
-
-            await startProofTask(reason: reason, generation: generation)
-            await clearDebounceTask(generation: generation)
-        }
-    }
-
-    private func startProofTask(reason: AudioInputDeviceChangeReason, generation: Int) {
-        proofTask?.cancel()
-        proofTask = Task { [weak self] in
-            guard let self else { return }
-            let metric = await performActivationProof(reason: reason)
-            let isCurrentGeneration = await isCurrentGeneration(generation)
-            guard isCurrentGeneration, !Task.isCancelled else {
-                await clearProofTask(generation: generation)
-                return
-            }
-            await record(metric)
-            await clearProofTask(generation: generation)
-        }
-    }
-
-    private func cancelScheduledWork() {
-        scheduledWorkGeneration += 1
-        debounceTask?.cancel()
-        debounceTask = nil
-        proofTask?.cancel()
-        proofTask = nil
-    }
-
-    private func isCurrentGeneration(_ generation: Int) -> Bool {
-        scheduledWorkGeneration == generation
-    }
-
-    private func clearDebounceTask(generation: Int) {
-        guard scheduledWorkGeneration == generation else { return }
-        debounceTask = nil
-    }
-
-    private func clearProofTask(generation: Int) {
-        guard scheduledWorkGeneration == generation else { return }
-        proofTask = nil
-    }
-
-    private func record(_ metric: AudioInputActivationMetrics) async {
-        recentActivationMetrics.insert(metric, at: 0)
-        if recentActivationMetrics.count > maxStoredMetrics {
-            recentActivationMetrics = Array(recentActivationMetrics.prefix(maxStoredMetrics))
-        }
-
-        let status = metric.succeeded ? "succeeded" : "failed"
-        logger.info(
-            "[AudioInputActivationCoordinator] Idle activation \(status, privacy: .public) reason=\(metric.reason, privacy: .public) device=\(metric.deviceID, privacy: .public) attempts=\(metric.attemptCount, privacy: .public)"
-        )
-        if persistMetrics {
-            await MetricsLogger.shared.logAudioActivation(metric)
-        }
-    }
-
-    private func performActivationProof(reason: AudioInputDeviceChangeReason) async -> AudioInputActivationMetrics {
-        var lastSnapshot: AudioInputDeviceSnapshot?
-        var lastErrorCode: Int32?
-        var lastObservation = AudioInputSampleObservation()
-        var lastStartedAt = Date()
-
-        for attempt in 1 ... maximumAttempts {
-            if Task.isCancelled {
-                break
-            }
-
-            let snapshot: AudioInputDeviceSnapshot
-            do {
-                snapshot = try backend.currentDefaultInputSnapshot()
-            } catch {
-                lastErrorCode = audioCaptureErrorCode(error)
-                return makeActivationMetrics(
-                    reason: reason,
-                    snapshot: lastSnapshot,
-                    attemptCount: attempt,
-                    startedAt: lastStartedAt,
-                    observation: lastObservation,
-                    succeeded: false,
-                    errorCode: lastErrorCode
-                )
-            }
-
-            lastSnapshot = snapshot
-            let observation = AudioInputSampleObservation()
-            lastObservation = observation
-            lastStartedAt = Date()
-
-            do {
-                try await backend.start(
-                    snapshot: snapshot,
-                    onHALCallback: {
-                        observation.markHALCallback()
-                    },
-                    onSamples: { samples in
-                        guard !samples.isEmpty else { return }
-                        observation.markReceived()
-                    }
-                )
-            } catch {
-                lastErrorCode = audioCaptureErrorCode(error)
-                await backend.stop()
-                if attempt < maximumAttempts {
-                    try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
-                    continue
-                }
-                break
-            }
-
-            let receivedSamples = await waitForSamples(
-                observation: observation,
-                timeout: timeout
-            )
-
-            await backend.stop()
-
-            if Task.isCancelled {
-                break
-            }
-
-            guard receivedSamples else {
-                if attempt < maximumAttempts {
-                    try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
-                    continue
-                }
-                break
-            }
-
-            let currentSnapshot = try? backend.currentDefaultInputSnapshot()
-            if let currentSnapshot, currentSnapshot.deviceID != snapshot.deviceID {
-                lastSnapshot = currentSnapshot
-                if attempt < maximumAttempts {
-                    try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
-                    continue
-                }
-                break
-            }
-
-            return makeActivationMetrics(
-                reason: reason,
-                snapshot: snapshot,
-                attemptCount: attempt,
-                startedAt: lastStartedAt,
-                observation: lastObservation,
-                succeeded: true,
-                errorCode: nil
-            )
-        }
-
-        return makeActivationMetrics(
-            reason: reason,
-            snapshot: lastSnapshot,
-            attemptCount: maximumAttempts,
-            startedAt: lastStartedAt,
-            observation: lastObservation,
-            succeeded: false,
-            errorCode: lastErrorCode
-        )
-    }
-
-    private func waitForSamples(observation: AudioInputSampleObservation, timeout: TimeInterval) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if Task.isCancelled {
-                return false
-            }
-
-            if observation.hasReceivedConvertedBuffer {
-                return true
-            }
-
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
-
-        return observation.hasReceivedConvertedBuffer
-    }
-
-    private func makeActivationMetrics(
-        reason: AudioInputDeviceChangeReason,
-        snapshot: AudioInputDeviceSnapshot?,
-        attemptCount: Int,
-        startedAt: Date,
-        observation: AudioInputSampleObservation,
-        succeeded: Bool,
-        errorCode: Int32?
-    ) -> AudioInputActivationMetrics {
-        let halCallbackMs = observation.firstHALCallbackAt.map { $0.timeIntervalSince(startedAt) * 1000 }
-        let convertedBufferMs = observation.firstConvertedBufferAt.map { $0.timeIntervalSince(startedAt) * 1000 }
-
-        return AudioInputActivationMetrics(
-            reason: reason.rawValue,
-            deviceID: UInt32(snapshot?.deviceID ?? 0),
-            deviceUIDHash: hashAudioDeviceUID(snapshot?.uid),
-            deviceName: snapshot?.name,
-            transportType: snapshot?.transportType,
-            nominalSampleRate: snapshot?.nominalSampleRate ?? 0,
-            inputChannelCount: snapshot?.inputChannelCount ?? 0,
-            attemptCount: attemptCount,
-            timeToFirstHALCallbackMs: halCallbackMs,
-            timeToFirstConvertedBufferMs: convertedBufferMs,
-            succeeded: succeeded,
-            errorCode: errorCode
-        )
-    }
-}
-
-actor AudioInputActivationProof {
-    private let backend: any AudioInputCaptureBackend
-    private let timeout: TimeInterval
-    private let maximumAttempts: Int
-    private let retryDelayNanoseconds: UInt64
-    private var isActive = false
-
-    init(
-        backend: any AudioInputCaptureBackend,
-        timeout: TimeInterval = 1.5,
-        maximumAttempts: Int = 2,
-        retryDelayNanoseconds: UInt64 = 200_000_000
-    ) {
-        self.backend = backend
-        self.timeout = timeout
-        self.maximumAttempts = maximumAttempts
-        self.retryDelayNanoseconds = retryDelayNanoseconds
-    }
-
-    func start(
-        onActivated: @escaping @Sendable () -> Void = {},
-        onSamples: @escaping @Sendable ([Float]) -> Void
-    ) async throws -> AudioInputDeviceSnapshot {
-        for attempt in 1 ... maximumAttempts {
-            let snapshot = try backend.currentDefaultInputSnapshot()
-            let observation = AudioInputSampleObservation()
-
-            try await backend.start(snapshot: snapshot, onHALCallback: observation.markHALCallback) { samples in
-                guard !samples.isEmpty else { return }
-                observation.markReceived()
-                onSamples(samples)
-            }
-
-            let didReceiveSamples = await waitForSamples(observation: observation, timeout: timeout)
-            guard didReceiveSamples else {
-                await backend.stop()
-                if attempt < maximumAttempts {
-                    try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
-                    continue
-                }
-                throw AudioInputActivationProofError.startupTimedOut
-            }
-
-            let postActivationSnapshot = try? backend.currentDefaultInputSnapshot()
-            if let postActivationSnapshot, postActivationSnapshot.deviceID != snapshot.deviceID {
-                await backend.stop()
-                if attempt < maximumAttempts {
-                    try? await Task.sleep(nanoseconds: retryDelayNanoseconds)
-                    continue
-                }
-                throw AudioInputActivationProofError.startupTimedOut
-            }
-
-            isActive = true
-            onActivated()
-            return snapshot
-        }
-
-        throw AudioInputActivationProofError.startupTimedOut
-    }
-
-    func stop() async {
-        isActive = false
-        await backend.stop()
-    }
-
-    func activeState() -> Bool {
-        isActive
-    }
-
-    private func waitForSamples(observation: AudioInputSampleObservation, timeout: TimeInterval) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if Task.isCancelled {
-                return false
-            }
-
-            if observation.hasReceivedConvertedBuffer {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: 5_000_000)
-        }
-        return observation.hasReceivedConvertedBuffer
-    }
-}
-
-enum AudioInputActivationProofError: LocalizedError {
-    case startupTimedOut
-
-    var errorDescription: String? {
-        "Timed out waiting for audio samples from the selected input device."
-    }
-}
-
-func audioCaptureErrorCode(_ error: Error) -> Int32? {
-    if let audioCaptureError = error as? AudioCaptureError {
-        switch audioCaptureError {
-        case let .osStatus(status, _):
-            return Int32(status)
-        case .audioComponentUnavailable, .unsupportedStreamFormat, .converterUnavailable:
-            return nil
-        }
-    }
-
-    let nsError = error as NSError
-    guard nsError.code >= Int(Int32.min), nsError.code <= Int(Int32.max) else {
-        return nil
-    }
-    return Int32(nsError.code)
-}
-
-private final class AudioInputSampleObservation: @unchecked Sendable {
-    private let lock = NSLock()
-    private var receivedSamples = false
-    private var firstCallbackAt: Date?
-    private var firstReceivedAt: Date?
-
-    func markHALCallback() {
-        lock.withLock {
-            if firstCallbackAt == nil {
-                firstCallbackAt = Date()
-            }
-        }
-    }
-
-    func markReceived() {
-        lock.withLock {
-            if firstReceivedAt == nil {
-                firstReceivedAt = Date()
-            }
-            receivedSamples = true
-        }
-    }
-
-    var hasReceivedConvertedBuffer: Bool {
-        lock.withLock { receivedSamples }
-    }
-
-    var firstHALCallbackAt: Date? {
-        lock.withLock { firstCallbackAt }
-    }
-
-    var firstConvertedBufferAt: Date? {
-        lock.withLock { firstReceivedAt }
-    }
 }

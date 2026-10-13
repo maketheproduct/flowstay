@@ -46,14 +46,11 @@ public actor MetricsLogger {
 
     private let maxStoredMetrics = 100
     private var recentMetrics: [RecordingMetrics] = []
-    private var recentAudioActivationMetrics: [AudioInputActivationMetrics] = []
     private var recordingMetricsFileURL: URL?
-    private var audioActivationMetricsFileURL: URL?
 
     private init() {
         // Setup file URL synchronously using nonisolated helper
         recordingMetricsFileURL = Self.createFileURL(filename: "recording_metrics.json")
-        audioActivationMetricsFileURL = Self.createFileURL(filename: "audio_activation_metrics.json")
         Task {
             await loadMetrics()
         }
@@ -95,34 +92,9 @@ public actor MetricsLogger {
         print(summary)
     }
 
-    /// Log local audio activation diagnostics. Device names stay on disk only.
-    public func logAudioActivation(_ metrics: AudioInputActivationMetrics) {
-        recentAudioActivationMetrics.insert(metrics, at: 0)
-
-        if recentAudioActivationMetrics.count > maxStoredMetrics {
-            recentAudioActivationMetrics = Array(recentAudioActivationMetrics.prefix(maxStoredMetrics))
-        }
-
-        saveAudioActivationMetrics()
-
-        let summary = """
-        [MetricsLogger] Audio activation:
-          - Reason: \(metrics.reason)
-          - Device ID: \(metrics.deviceID)
-          - Succeeded: \(metrics.succeeded)
-          - Attempts: \(metrics.attemptCount)
-        """
-        print(summary)
-    }
-
     /// Get recent metrics for debugging
     public func getRecentMetrics() -> [RecordingMetrics] {
         recentMetrics
-    }
-
-    /// Get recent local audio activation metrics for debugging.
-    public func getRecentAudioActivationMetrics() -> [AudioInputActivationMetrics] {
-        recentAudioActivationMetrics
     }
 
     /// Get metrics summary for support requests
@@ -159,22 +131,8 @@ public actor MetricsLogger {
         }
     }
 
-    private func saveAudioActivationMetrics() {
-        guard let url = audioActivationMetricsFileURL else { return }
-
-        do {
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = .prettyPrinted
-            let data = try encoder.encode(recentAudioActivationMetrics)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            print("[MetricsLogger] Failed to save audio activation metrics: \(error)")
-        }
-    }
-
     private func loadMetrics() {
         loadRecordingMetrics()
-        loadAudioActivationMetrics()
     }
 
     private func loadRecordingMetrics() {
@@ -192,22 +150,6 @@ public actor MetricsLogger {
             print("[MetricsLogger] Failed to load metrics: \(error)")
             // Don't fail - just start fresh
             recentMetrics = []
-        }
-    }
-
-    private func loadAudioActivationMetrics() {
-        guard let url = audioActivationMetricsFileURL,
-              FileManager.default.fileExists(atPath: url.path)
-        else { return }
-
-        do {
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            recentAudioActivationMetrics = try decoder.decode([AudioInputActivationMetrics].self, from: data)
-            print("[MetricsLogger] Loaded \(recentAudioActivationMetrics.count) historical audio activation metrics")
-        } catch {
-            print("[MetricsLogger] Failed to load audio activation metrics: \(error)")
-            recentAudioActivationMetrics = []
         }
     }
 }
