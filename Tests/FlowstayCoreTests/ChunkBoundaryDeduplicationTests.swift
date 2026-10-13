@@ -57,7 +57,14 @@ final class ChunkBoundaryDeduplicationTests: XCTestCase {
                 "Marker one. The weather says rain. Marker two. The weather says rain.",
                 "Marker two. The weather says rain. Marker three. The weather says rain.",
             ],
-            overlapWordCounts: [nil, 6]
+            timings: [
+                nil,
+                .init(
+                    wordStartTimes: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 5.5, 6.0, 6.5, 7.0, 7.5, 8.0],
+                    audioDuration: 9,
+                    overlapSeconds: 5
+                ),
+            ]
         )
 
         XCTAssertEqual(
@@ -66,20 +73,57 @@ final class ChunkBoundaryDeduplicationTests: XCTestCase {
         )
     }
 
-    func testWordsStartedBeforeOverlapCountsWordInitialTokens() async {
+    func testJoinsMidOverlapWhenTheCutGarbledTheLastWord() async {
+        let manager = ChunkedRecordingManager()
+
+        // Real seam from a 5 minute recording: the first chunk ended mid "Marker forty-eight"
+        // and heard "Marker 46.". Timings from the ASR; the chunks share 5s of audio.
+        let previous = "Marker 46. The weather report says it will rain later today. "
+            + "Marker 47. The weather report says it will rain later today. Marker 46."
+        let previousTimes: [TimeInterval] = [
+            180.3, 180.8, 181.6, 181.8, 182.1, 182.5, 182.7, 182.9, 183.1, 183.4, 183.7,
+            184.40, 184.88, 185.76, 185.92, 186.24, 186.64, 186.88, 187.04, 187.20, 187.52, 187.84, 188.40, 188.88,
+        ]
+        let next = "Marker 47, the weather report says it will rain later today. "
+            + "Marker 48, the weather report says it will rain later today."
+        let nextTimes: [TimeInterval] = [
+            0.40, 0.88, 1.76, 1.92, 2.24, 2.64, 2.88, 3.04, 3.20, 3.52, 3.84,
+            4.40, 4.88, 5.60, 5.76, 6.08, 6.48, 6.72, 6.88, 7.04, 7.36, 7.68,
+        ]
+
+        let text = await manager.deduplicateBoundaries(
+            [previous, next],
+            timings: [
+                .init(wordStartTimes: previousTimes, audioDuration: 189, overlapSeconds: 0),
+                .init(wordStartTimes: nextTimes, audioDuration: 8.5, overlapSeconds: 5),
+            ]
+        )
+
+        XCTAssertEqual(
+            text,
+            "Marker 46. The weather report says it will rain later today. "
+                + "Marker 47. The weather report says it will rain later today. "
+                + "Marker 48, the weather report says it will rain later today."
+        )
+    }
+
+    func testWordStartTimesUseWordInitialTokens() async {
         let manager = ChunkedRecordingManager()
         let timings = [
             TokenTiming(token: " The", tokenId: 1, startTime: 0.0, endTime: 0.1, confidence: 1),
             TokenTiming(token: " qu", tokenId: 2, startTime: 0.1, endTime: 0.2, confidence: 1),
             TokenTiming(token: "ick", tokenId: 3, startTime: 0.2, endTime: 0.3, confidence: 1),
             TokenTiming(token: ".", tokenId: 4, startTime: 0.3, endTime: 0.4, confidence: 1),
-            TokenTiming(token: " Next", tokenId: 5, startTime: 5.2, endTime: 5.3, confidence: 1),
+            TokenTiming(token: " ", tokenId: 5, startTime: 4.9, endTime: 5.0, confidence: 1),
+            TokenTiming(token: "4", tokenId: 6, startTime: 5.0, endTime: 5.1, confidence: 1),
+            TokenTiming(token: "8", tokenId: 7, startTime: 5.1, endTime: 5.2, confidence: 1),
         ]
 
-        let count = await manager.wordsStarted(before: 5.0, in: timings)
-        let missing = await manager.wordsStarted(before: 5.0, in: nil)
+        let times = await manager.wordStartTimes(in: timings)
+        let missing = await manager.wordStartTimes(in: nil)
 
-        XCTAssertEqual(count, 2)
+        // "The quick. 48"
+        XCTAssertEqual(times, [0.0, 0.1, 4.9])
         XCTAssertNil(missing)
     }
 }

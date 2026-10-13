@@ -94,9 +94,16 @@ public actor ChunkedRecordingManager {
         let index: Int
         let text: String
         let hadError: Bool
-        /// Words at the start of `text` that were spoken in the audio shared with the
-        /// previous chunk, from the ASR token timings. Nil when timings are unavailable.
-        var overlapWordCount: Int?
+        var timing: ChunkTiming?
+    }
+
+    /// When each word of a chunk's text was spoken, from the ASR token timings.
+    struct ChunkTiming {
+        /// Start of each word of the chunk text, in seconds into the chunk audio.
+        let wordStartTimes: [TimeInterval]
+        let audioDuration: TimeInterval
+        /// Audio at the start of the chunk shared with the end of the previous chunk.
+        let overlapSeconds: TimeInterval
     }
 
     // MARK: - Initialization
@@ -180,10 +187,7 @@ public actor ChunkedRecordingManager {
 
         // Stitch all chunk results together
         let orderedChunks = completedChunks.sorted { $0.index < $1.index }
-        let finalText = deduplicateBoundaries(
-            orderedChunks.map(\.text),
-            overlapWordCounts: orderedChunks.map(\.overlapWordCount)
-        )
+        let finalText = deduplicateBoundaries(orderedChunks.map(\.text), timings: orderedChunks.map(\.timing))
 
         // Create metrics
         let metrics = RecordingMetrics(
@@ -341,9 +345,13 @@ public actor ChunkedRecordingManager {
                     index: chunkIndex,
                     text: text,
                     hadError: false,
-                    overlapWordCount: overlapSeconds > 0
-                        ? wordsStarted(before: overlapSeconds, in: result.tokenTimings)
-                        : nil
+                    timing: wordStartTimes(in: result.tokenTimings).map {
+                        ChunkTiming(
+                            wordStartTimes: $0,
+                            audioDuration: Double(samples.count) / sampleRate,
+                            overlapSeconds: overlapSeconds
+                        )
+                    }
                 )
             } catch is TranscriptionTimeoutError {
                 logger.warning("[ChunkedRecordingManager] Chunk \(chunkIndex, privacy: .public) transcription attempt \(attempt, privacy: .public) timed out after 30s — not retrying (ASR may still be running)")
@@ -440,15 +448,26 @@ public actor ChunkedRecordingManager {
 
     /// Deduplicate overlapping text at chunk boundaries
     ///
-    /// When chunks are processed with overlapping audio, the same words may appear
-    /// at the end of one chunk and the beginning of the next. This method finds
-    /// and removes these duplicates.
-    func deduplicateBoundaries(_ chunks: [String], overlapWordCounts: [Int?] = []) -> String {
+    /// Consecutive chunks share `overlapDuration` of audio, so the same words appear at the
+    /// end of one chunk's text and the start of the next. A word cut off at the end of a
+    /// chunk is often misheard there, so with timings on both sides the texts are joined in
+    /// the middle of the shared audio, where each chunk has heard about 2.5s either side.
+    func deduplicateBoundaries(_ chunks: [String], timings: [ChunkTiming?] = []) -> String {
         guard chunks.count > 1 else {
             return chunks.first ?? ""
         }
 
-        var result = chunks[0]
+        func validTiming(_ index: Int) -> ChunkTiming? {
+            guard index < timings.count, let timing = timings[index],
+                  timing.wordStartTimes.count == chunks[index].split(separator: " ").count
+            else { return nil }
+            return timing
+        }
+
+        var words = chunks[0].split(separator: " ").map(String.init)
+        // Timing of the chunk whose words end `words`, and start times of those words.
+        var tailTiming = validTiming(0)
+        var tailStartTimes = tailTiming?.wordStartTimes ?? []
 
         for i in 1 ..< chunks.count {
             let nextChunk = chunks[i]
@@ -456,39 +475,73 @@ public actor ChunkedRecordingManager {
             // Skip empty chunks or placeholder chunks
             if nextChunk.isEmpty || nextChunk == failedChunkPlaceholder {
                 if nextChunk == failedChunkPlaceholder {
-                    result += " " + nextChunk
+                    words.append(nextChunk)
                 }
+                // The next chunk overlaps this one, not the text before it.
+                tailTiming = nil
                 continue
             }
 
-            // Words from the shared audio: from token timings when available,
-            // otherwise from matching the end of result against the start of nextChunk.
-            let timedOverlap = i < overlapWordCounts.count ? overlapWordCounts[i] : nil
+            let nextWords = nextChunk.split(separator: " ").map(String.init)
+            let nextTiming = validTiming(i)
+
+            if let previous = tailTiming, let next = nextTiming, next.overlapSeconds > 0 {
+                let (dropFromPrevious, skipInNext) = midpointSplit(
+                    previousStartTimes: tailStartTimes,
+                    previousDuration: previous.audioDuration,
+                    next: next
+                )
+                words.removeLast(min(dropFromPrevious, words.count))
+                words.append(contentsOf: nextWords.dropFirst(skipInNext))
+                tailStartTimes = Array(next.wordStartTimes.dropFirst(skipInNext))
+                tailTiming = next
+                continue
+            }
+
+            // Words from the shared audio: from the next chunk's timings when available,
+            // otherwise from matching the end of the text so far against the start of nextChunk.
+            let result = words.joined(separator: " ")
+            let timedOverlap = nextTiming.map { timing in
+                timing.wordStartTimes.count { $0 < timing.overlapSeconds }
+            }
             let overlapCount = timedOverlap.map { refinedOverlapCount(result, nextChunk, expected: $0) }
                 ?? findOverlap(result, nextChunk)?.count ?? 0
-
-            if overlapCount > 0 {
-                // Remove duplicate words from the start of nextChunk
-                let words = nextChunk.split(separator: " ").map(String.init)
-                let remainingWords = Array(words.dropFirst(overlapCount))
-
-                if !remainingWords.isEmpty {
-                    result += " " + remainingWords.joined(separator: " ")
-                }
-            } else {
-                // No overlap found, just concatenate with space
-                result += " " + nextChunk
-            }
+            words.append(contentsOf: nextWords.dropFirst(overlapCount))
+            tailTiming = nextTiming
+            tailStartTimes = Array(nextTiming?.wordStartTimes.dropFirst(overlapCount) ?? [])
         }
 
-        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+        return words.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Number of words whose first token starts before `seconds` into the chunk audio.
-    /// SentencePiece word-initial tokens start with a space.
-    func wordsStarted(before seconds: TimeInterval, in timings: [TokenTiming]?) -> Int? {
+    /// Where to join two chunks: how many trailing words to drop from the previous chunk
+    /// and how many leading words to skip in the next one.
+    private func midpointSplit(
+        previousStartTimes: [TimeInterval],
+        previousDuration: TimeInterval,
+        next: ChunkTiming
+    ) -> (dropFromPrevious: Int, skipInNext: Int) {
+        let midpoint = next.overlapSeconds / 2
+        let skipInNext = next.wordStartTimes.firstIndex { $0 >= midpoint } ?? next.wordStartTimes.count
+        // Same moment on the previous chunk's clock.
+        let offset = previousDuration - next.overlapSeconds
+        let splitTime = (skipInNext < next.wordStartTimes.count ? next.wordStartTimes[skipInNext] : midpoint) + offset
+
+        // The previous chunk heard the first kept word too; cut just before its copy of it.
+        let nearest = previousStartTimes.indices.min { abs(previousStartTimes[$0] - splitTime) < abs(previousStartTimes[$1] - splitTime) }
+        let keepCount = if let nearest, abs(previousStartTimes[nearest] - splitTime) <= 0.3 {
+            nearest
+        } else {
+            previousStartTimes.firstIndex { $0 >= splitTime } ?? previousStartTimes.count
+        }
+        return (previousStartTimes.count - keepCount, skipInNext)
+    }
+
+    /// Start time of each word in the transcript. SentencePiece word-initial tokens start
+    /// with a space (a lone space token precedes digits).
+    func wordStartTimes(in timings: [TokenTiming]?) -> [TimeInterval]? {
         guard let timings, !timings.isEmpty else { return nil }
-        return timings.count { $0.startTime < seconds && $0.token.hasPrefix(" ") }
+        return timings.filter { $0.token.hasPrefix(" ") }.map(\.startTime)
     }
 
     /// Timing gives the overlap to within a word or two; settle the exact cut on the
