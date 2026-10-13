@@ -502,7 +502,7 @@ public actor ChunkedRecordingManager {
         var best = min(expected, words2.count)
         var bestScore = -1.0
         for length in candidates where length > 0 && length <= words1.count {
-            let matches = zip(words1.suffix(length), words2.prefix(length)).filter { $0 == $1 }.count
+            let matches = zip(words1.suffix(length), words2.prefix(length)).count(where: { $0 == $1 })
             // Prefer the timed estimate when scores tie.
             let score = Double(matches) / Double(length) - (length == expected ? 0 : 0.01)
             if score > bestScore {
@@ -537,7 +537,7 @@ public actor ChunkedRecordingManager {
         for overlapLength in 2 ... maximumLength {
             let endSlice = endWords.suffix(overlapLength)
             let startSlice = startWords.prefix(overlapLength)
-            let matches = zip(endSlice, startSlice).filter { $0 == $1 }.count
+            let matches = zip(endSlice, startSlice).count(where: { $0 == $1 })
             let isMatch = overlapLength < 4
                 ? matches == overlapLength
                 : Double(matches) / Double(overlapLength) >= 0.75

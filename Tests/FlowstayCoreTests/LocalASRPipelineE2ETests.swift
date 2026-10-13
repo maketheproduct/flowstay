@@ -96,17 +96,28 @@ final class LocalASRPipelineE2ETests: XCTestCase {
 
     func testFormats() async throws {
         let mono = try loadMono(sourcePath())
-        let cases: [(String, Double, AVAudioChannelCount, Int)] = [
-            ("48k stereo", 48000, 2, 0),
-            ("44.1k mono", 44100, 1, 0),
-            ("24k mono (Bluetooth HFP)", 24000, 1, 0),
-            ("16k mono (Bluetooth HFP)", 16000, 1, 0),
-            ("48k 8ch, speech on input 3", 48000, 8, 2),
+        struct DeviceCase {
+            let name: String
+            let rate: Double
+            let channels: AVAudioChannelCount
+            let speechChannel: Int
+        }
+        let cases = [
+            DeviceCase(name: "48k stereo", rate: 48000, channels: 2, speechChannel: 0),
+            DeviceCase(name: "44.1k mono", rate: 44100, channels: 1, speechChannel: 0),
+            DeviceCase(name: "24k mono (Bluetooth HFP)", rate: 24000, channels: 1, speechChannel: 0),
+            DeviceCase(name: "16k mono (Bluetooth HFP)", rate: 16000, channels: 1, speechChannel: 0),
+            DeviceCase(name: "48k 8ch, speech on input 3", rate: 48000, channels: 8, speechChannel: 2),
         ]
-        for (name, rate, channels, speechChannel) in cases {
-            let device = try makeDeviceBuffer(from: mono, rate: rate, channels: channels, speechChannel: speechChannel)
+        for deviceCase in cases {
+            let device = try makeDeviceBuffer(
+                from: mono,
+                rate: deviceCase.rate,
+                channels: deviceCase.channels,
+                speechChannel: deviceCase.speechChannel
+            )
             let text = try await transcribe(device: device, forceBoundaryAtFraction: nil)
-            print("CASE \(name)")
+            print("CASE \(deviceCase.name)")
             assertTranscript(text)
         }
     }
@@ -117,7 +128,7 @@ final class LocalASRPipelineE2ETests: XCTestCase {
         let text = try await transcribe(device: device, forceBoundaryAtFraction: 0.5)
         assertTranscript(text)
         let words = text.lowercased().split(separator: " ")
-        XCTAssertEqual(words.filter { $0.hasPrefix("fox") }.count, 1, "duplicated overlap: \(text)")
+        XCTAssertEqual(words.count(where: { $0.hasPrefix("fox") }), 1, "duplicated overlap: \(text)")
     }
 
     /// FLOWSTAY_E2E_MARKER_AUDIO: speech of "Marker one. <same sentence>" … "Marker seventy-two. …".
