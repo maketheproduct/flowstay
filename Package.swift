@@ -16,11 +16,15 @@ let package = Package(
     ],
     dependencies: [
         // KeyboardShortcuts for modern global hotkey management
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.0.0"),
+        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "2.4.0"),
         // FluidAudio for modern ASR with Parakeet TDT
-        .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.7.9"),
+        .package(
+            url: "https://github.com/FluidInference/FluidAudio",
+            from: "0.17.7",
+            traits: [] // Skip the NeMo text-normalization engine; Flowstay only uses ASR
+        ),
         // Sparkle for auto-updates
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.10.0"),
     ],
     targets: [
         // Main app executable
