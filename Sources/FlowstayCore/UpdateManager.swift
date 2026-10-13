@@ -51,9 +51,10 @@ public class UpdateManager: ObservableObject {
 
         // Configure update checks
         if let updater = updaterController?.updater {
-            // Check for updates on every app launch
+            // Sparkle treats an interval of 0 as "automatic checks off". One hour is its minimum:
+            // it checks at launch when the last check is older than that, and hourly while running.
+            updater.updateCheckInterval = 3600
             updater.automaticallyChecksForUpdates = true
-            updater.updateCheckInterval = 0 // Check every launch
             isUpdaterAvailable = true
 
             print("[UpdateManager] ✅ Sparkle initialized")
