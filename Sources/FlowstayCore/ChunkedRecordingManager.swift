@@ -68,6 +68,9 @@ public actor ChunkedRecordingManager {
 
     /// Currently running transcription task
     private var pendingTranscription: Task<Void, Never>?
+    /// Bumped on every reset so transcriptions still running for a previous
+    /// recording cannot append their text to the next one.
+    private var sessionGeneration = 0
 
     /// Reference to ASR manager for transcription
     /// SAFETY: nonisolated(unsafe) because AsrManager doesn't conform to Sendable.
@@ -204,6 +207,7 @@ public actor ChunkedRecordingManager {
         overlapBuffer.reserveCapacity(0)
         pendingTranscription?.cancel()
         pendingTranscription = nil
+        sessionGeneration += 1
         chunkDurations.removeAll()
         transcriptionTimes.removeAll()
         errorMessages.removeAll()
@@ -291,13 +295,14 @@ public actor ChunkedRecordingManager {
 
         // Start background transcription
         let transcriptionStart = Date()
+        let generation = sessionGeneration
         pendingTranscription = Task { [weak self, samplesToTranscribe, chunkIndex] in
             guard let self else { return }
 
             let result = await transcribeChunk(samplesToTranscribe, chunkIndex: chunkIndex)
 
             let transcriptionTime = Date().timeIntervalSince(transcriptionStart)
-            await recordChunkResult(result, transcriptionTime: transcriptionTime)
+            await recordChunkResult(result, transcriptionTime: transcriptionTime, generation: generation)
         }
     }
 
@@ -369,7 +374,10 @@ public actor ChunkedRecordingManager {
             // Transcription task
             let work = Task.detached {
                 do {
-                    let result = try await box.manager.transcribe(samples, source: .system)
+                    // Chunks overlap and are deduplicated afterwards, so each one
+                    // starts from a fresh decoder state (as FluidAudio 0.7 did).
+                    var decoderState = TdtDecoderState.make()
+                    let result = try await box.manager.transcribe(samples, decoderState: &decoderState)
                     let shouldResume = finished.withLock { done -> Bool in
                         guard !done else { return false }
                         done = true
@@ -407,7 +415,11 @@ public actor ChunkedRecordingManager {
     }
 
     /// Record a completed chunk's result
-    private func recordChunkResult(_ result: ChunkResult, transcriptionTime: TimeInterval) {
+    private func recordChunkResult(_ result: ChunkResult, transcriptionTime: TimeInterval, generation: Int) {
+        guard generation == sessionGeneration else {
+            logger.info("[ChunkedRecordingManager] Dropping chunk \(result.index, privacy: .public) result from a previous recording")
+            return
+        }
         completedChunks.append(result)
         transcriptionTimes.append(transcriptionTime)
 
@@ -421,7 +433,7 @@ public actor ChunkedRecordingManager {
     /// When chunks are processed with overlapping audio, the same words may appear
     /// at the end of one chunk and the beginning of the next. This method finds
     /// and removes these duplicates.
-    private func deduplicateBoundaries(_ chunks: [String]) -> String {
+    func deduplicateBoundaries(_ chunks: [String]) -> String {
         guard chunks.count > 1 else {
             return chunks.first ?? ""
         }
@@ -459,36 +471,46 @@ public actor ChunkedRecordingManager {
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// Find overlapping words between the end of one text and the start of another
-    /// - Returns: The overlapping words from the end of text1, or nil if no significant overlap
+    /// Find overlapping words between the end of one text and the start of another.
+    /// Chunks share 5s of audio (often more than 15 words), and the ASR can render the
+    /// seam slightly differently in each chunk ("release" vs "released"), so the
+    /// alignment tolerates a few mismatched words.
+    /// - Returns: The overlapping words from the start of text2, or nil if no significant overlap
     private func findOverlap(_ text1: String, _ text2: String) -> [String]? {
-        let words1 = text1.split(separator: " ").map { String($0).lowercased() }
-        let words2 = text2.split(separator: " ").map { String($0).lowercased() }
+        let words1 = text1.split(separator: " ").map(normalizedOverlapWord)
+        let words2 = text2.split(separator: " ").map(normalizedOverlapWord)
 
-        // Look for overlap in the last 15 words of text1 and first 15 words of text2
-        let searchWindow = 15
+        let searchWindow = 40
         let endWords = Array(words1.suffix(searchWindow))
         let startWords = Array(words2.prefix(searchWindow))
+        let maximumLength = min(endWords.count, startWords.count)
 
-        // Find longest common sequence at boundary
-        var bestOverlap: [String]? = nil
+        // Minimum 2 words to avoid false positives
+        guard maximumLength >= 2 else {
+            return nil
+        }
+
         var bestLength = 0
-
-        // Try different overlap lengths (minimum 2 words to avoid false positives)
-        for overlapLength in (2 ... min(endWords.count, startWords.count)).reversed() {
-            let endSlice = Array(endWords.suffix(overlapLength))
-            let startSlice = Array(startWords.prefix(overlapLength))
-
-            // Check if sequences match (case-insensitive)
-            if endSlice == startSlice {
-                if overlapLength > bestLength {
-                    bestLength = overlapLength
-                    bestOverlap = startSlice
-                }
-                break // Found longest match
+        var bestMatches = 0
+        for overlapLength in 2 ... maximumLength {
+            let endSlice = endWords.suffix(overlapLength)
+            let startSlice = startWords.prefix(overlapLength)
+            let matches = zip(endSlice, startSlice).filter { $0 == $1 }.count
+            let isMatch = overlapLength < 4
+                ? matches == overlapLength
+                : Double(matches) / Double(overlapLength) >= 0.75
+            if isMatch, matches >= bestMatches {
+                bestLength = overlapLength
+                bestMatches = matches
             }
         }
 
-        return bestOverlap
+        return bestLength > 0 ? Array(startWords.prefix(bestLength)) : nil
     }
+}
+
+/// Lowercased word with surrounding punctuation removed, so "meeting." and
+/// "Meeting" match when deduplicating chunk overlaps.
+private func normalizedOverlapWord(_ word: Substring) -> String {
+    word.lowercased().trimmingCharacters(in: .punctuationCharacters)
 }
