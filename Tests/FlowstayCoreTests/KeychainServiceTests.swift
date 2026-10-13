@@ -7,7 +7,7 @@ final class KeychainServiceTests: XCTestCase {
     private var keychainService: KeychainService!
 
     override func setUp() async throws {
-        keychainService = KeychainService.shared
+        keychainService = KeychainService(serviceName: "com.flowstay.Flowstay.tests")
         // Clean up any existing test data
         await keychainService.deleteAPIKey(for: testProvider)
     }

@@ -3,6 +3,7 @@ import XCTest
 
 final class TranscriptionHistoryStoreTests: XCTestCase {
     var historyStore: TranscriptionHistoryStore!
+    private var historyDirectory: URL!
 
     /// Check if we have write access to the history directory
     /// Tests will be skipped if running in a sandbox without write permissions
@@ -19,7 +20,10 @@ final class TranscriptionHistoryStoreTests: XCTestCase {
     }
 
     override func setUp() async throws {
-        historyStore = TranscriptionHistoryStore.shared
+        // Never point tests at the real store: deleteAll() would wipe the user's history.
+        historyDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("flowstay-history-tests-\(UUID().uuidString)", isDirectory: true)
+        historyStore = TranscriptionHistoryStore(historyDirectoryURL: historyDirectory)
         // Only clean up if we have file access
         if hasFileAccess {
             _ = await historyStore.deleteAll()
@@ -31,6 +35,29 @@ final class TranscriptionHistoryStoreTests: XCTestCase {
         if hasFileAccess {
             _ = await historyStore.deleteAll()
         }
+        try? FileManager.default.removeItem(at: historyDirectory)
+    }
+
+    func testProcessedTextKeepsItsOwnMarkdownHeadings() {
+        let body = """
+
+        ## Original Transcription
+
+        action items for the launch
+
+        ## Processed Text
+
+        ## Action items
+        - Ship the release
+
+        ## Owners
+        - Jack
+        """
+
+        let sections = TranscriptionHistoryStore.extractTextSections(from: body)
+
+        XCTAssertEqual(sections.raw, "action items for the launch")
+        XCTAssertEqual(sections.processed, "## Action items\n- Ship the release\n\n## Owners\n- Jack")
     }
 
     // MARK: - Helper Methods
