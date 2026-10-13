@@ -1,4 +1,5 @@
 @testable import FlowstayCore
+import Security
 import XCTest
 
 final class KeychainServiceTests: XCTestCase {
@@ -7,14 +8,27 @@ final class KeychainServiceTests: XCTestCase {
     private var keychainService: KeychainService!
 
     override func setUp() async throws {
+        try XCTSkipIf(Self.keychainIsLocked(), "Login keychain is locked (e.g. over SSH)")
         keychainService = KeychainService(serviceName: "com.flowstay.Flowstay.tests")
         // Clean up any existing test data
         await keychainService.deleteAPIKey(for: testProvider)
     }
 
     override func tearDown() async throws {
-        // Clean up test data
-        await keychainService.deleteAPIKey(for: testProvider)
+        // Clean up test data (nil when setUp skipped)
+        await keychainService?.deleteAPIKey(for: testProvider)
+    }
+
+    private static func keychainIsLocked() -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.flowstay.Flowstay.tests",
+            kSecAttrAccount as String: "lock-probe",
+            kSecValueData as String: Data("probe".utf8),
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        SecItemDelete(query.filter { $0.key != kSecValueData as String } as CFDictionary)
+        return status == errSecInteractionNotAllowed
     }
 
     // MARK: - Save and Retrieve Tests
