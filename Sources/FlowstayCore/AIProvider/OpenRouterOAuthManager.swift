@@ -12,41 +12,56 @@ import os
 /// 1. All network operations are serialized through a dedicated DispatchQueue (`queue`)
 /// 2. The listener and onCodeReceived are only modified from that queue
 /// 3. The logger is thread-safe by design (os.Logger)
-private final nonisolated class LocalCallbackServer: @unchecked Sendable {
+final nonisolated class LocalCallbackServer: @unchecked Sendable {
     private final class StartupWaitState: @unchecked Sendable {
         private let lock = NSLock()
-        private let semaphore = DispatchSemaphore(value: 0)
+        private var isFinished = false
         private var result: Result<UInt16, Error>?
+        private var continuation: CheckedContinuation<Result<UInt16, Error>?, Never>?
 
-        func complete(_ result: Result<UInt16, Error>) {
+        /// Records the first outcome; `nil` means startup timed out.
+        func complete(_ result: Result<UInt16, Error>?) {
             lock.lock()
-            defer { lock.unlock() }
-            guard self.result == nil else { return }
+            guard !isFinished else {
+                lock.unlock()
+                return
+            }
+            isFinished = true
             self.result = result
-            semaphore.signal()
+            let waiter = continuation
+            continuation = nil
+            lock.unlock()
+            waiter?.resume(returning: result)
         }
 
-        func wait(timeout: TimeInterval) -> Result<UInt16, Error>? {
-            let waitResult = semaphore.wait(timeout: .now() + timeout)
-            guard waitResult == .success else {
-                return nil
+        /// Suspends (without blocking a thread) until the listener is ready, fails or times out.
+        func wait(timeout: TimeInterval) async -> Result<UInt16, Error>? {
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { [weak self] in
+                self?.complete(nil)
             }
-
-            lock.lock()
-            defer { lock.unlock() }
-            return result
+            return await withCheckedContinuation { continuation in
+                lock.lock()
+                if isFinished {
+                    let finishedResult = result
+                    lock.unlock()
+                    continuation.resume(returning: finishedResult)
+                    return
+                }
+                self.continuation = continuation
+                lock.unlock()
+            }
         }
     }
 
     private var listener: NWListener?
-    private var onCodeReceived: ((String, String?) -> Void)? // (code, state)
+    private var onCodeReceived: (@Sendable (String, String?) -> Void)? // (code, state)
     private let logger = Logger(subsystem: "com.flowstay.core", category: "LocalCallbackServer")
     private let queue = DispatchQueue(label: "com.flowstay.oauth.server")
 
     /// Start the server on localhost.
     /// - Parameter preferredPort: Optional fixed port. If nil, the system assigns a free port.
     /// - Returns: The port number the server is listening on
-    func start(preferredPort: UInt16? = nil, onCode: @escaping (String, String?) -> Void) throws -> UInt16 {
+    func start(preferredPort: UInt16? = nil, onCode: @escaping @Sendable (String, String?) -> Void) async throws -> UInt16 {
         onCodeReceived = onCode
 
         let parameters = NWParameters.tcp
@@ -89,6 +104,10 @@ private final nonisolated class LocalCallbackServer: @unchecked Sendable {
             case let .failed(error):
                 logger.error("[Server] Failed: \(error.localizedDescription)")
                 startupState.complete(.failure(error))
+            case let .waiting(error):
+                // A listener that cannot bind (e.g. port in use) waits instead of failing.
+                logger.error("[Server] Waiting: \(error.localizedDescription)")
+                startupState.complete(.failure(error))
             case .cancelled:
                 logger.info("[Server] Cancelled")
             default:
@@ -102,7 +121,7 @@ private final nonisolated class LocalCallbackServer: @unchecked Sendable {
 
         listener?.start(queue: queue)
 
-        guard let finalResult = startupState.wait(timeout: 3.0) else {
+        guard let finalResult = await startupState.wait(timeout: 3.0) else {
             stop()
             throw NSError(
                 domain: "com.flowstay.oauth",
@@ -387,17 +406,32 @@ public class OpenRouterOAuthManager: ObservableObject {
             return
         }
 
+        Task { [weak self] in
+            await self?.openAuthorizationPage(verifier: verifier, state: state)
+        }
+    }
+
+    private func openAuthorizationPage(verifier: String, state: String) async {
         // Start local callback server. Prefer OpenRouter's common localhost port,
         // but gracefully fallback if the port is already in use on the machine.
+        let server: LocalCallbackServer
         let callbackPort: UInt16
         do {
-            callbackPort = try startCallbackServerWithFallbackPorts()
+            (server, callbackPort) = try await startCallbackServerWithFallbackPorts()
         } catch {
+            guard isAuthenticating, stateParameter == state else { return }
             logger.error("[OAuth] Failed to start callback server: \(error.localizedDescription)")
             authError = "Failed to start authentication server: \(error.localizedDescription)"
             isAuthenticating = false
             return
         }
+
+        // The user may have cancelled (or restarted) sign-in while the server was starting.
+        guard isAuthenticating, stateParameter == state else {
+            server.stop()
+            return
+        }
+        callbackServer = server
 
         // Generate code challenge (SHA256 hash of verifier, base64url encoded)
         let codeChallenge = generateCodeChallenge(from: verifier)
@@ -520,30 +554,31 @@ public class OpenRouterOAuthManager: ObservableObject {
         }
     }
 
-    private func startCallbackServerWithRetry(preferredPort: UInt16?, maxAttempts: Int) throws -> UInt16 {
+    private func startCallbackServerWithRetry(
+        preferredPort: UInt16?,
+        maxAttempts: Int
+    ) async throws -> (LocalCallbackServer, UInt16) {
         var lastError: Error?
 
         for attempt in 1 ... maxAttempts {
             let server = LocalCallbackServer()
             do {
-                let port = try server.start(preferredPort: preferredPort) { [weak self] code, state in
+                let port = try await server.start(preferredPort: preferredPort) { [weak self] code, state in
                     Task { @MainActor in
                         await self?.handleAuthorizationCode(code, state: state)
                     }
                 }
 
-                callbackServer = server
                 if attempt > 1 {
                     logger.info("[OAuth] Callback server started successfully on retry \(attempt)")
                 }
-                return port
+                return (server, port)
             } catch {
                 lastError = error
                 server.stop()
-                callbackServer = nil
                 logger.error("[OAuth] Callback server start attempt \(attempt) failed: \(error.localizedDescription)")
                 if attempt < maxAttempts {
-                    Thread.sleep(forTimeInterval: 0.15)
+                    try? await Task.sleep(nanoseconds: 150_000_000)
                 }
             }
         }
@@ -555,20 +590,20 @@ public class OpenRouterOAuthManager: ObservableObject {
         )
     }
 
-    private func startCallbackServerWithFallbackPorts() throws -> UInt16 {
+    private func startCallbackServerWithFallbackPorts() async throws -> (LocalCallbackServer, UInt16) {
         let candidatePorts: [UInt16?] = [3000, 3001, 3002, nil]
         var lastError: Error?
 
         for candidatePort in candidatePorts {
             do {
-                let port = try startCallbackServerWithRetry(preferredPort: candidatePort, maxAttempts: 2)
+                let (server, port) = try await startCallbackServerWithRetry(preferredPort: candidatePort, maxAttempts: 2)
                 if let candidatePort, candidatePort != 3000 {
                     logger.warning("[OAuth] Port 3000 unavailable, using fallback port \(candidatePort)")
                 }
                 if candidatePort == nil {
                     logger.warning("[OAuth] Fixed localhost ports unavailable, using dynamic callback port")
                 }
-                return port
+                return (server, port)
             } catch {
                 lastError = error
 
