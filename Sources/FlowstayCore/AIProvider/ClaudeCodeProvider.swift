@@ -239,15 +239,40 @@ public final nonisolated class ClaudeCodeProvider: AIProviderProtocol, Sendable 
             throw AIProviderError.invalidResponse
         }
 
-        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let value = object["rewritten_text"] as? String
-        {
-            let final = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !final.isEmpty else { throw AIProviderError.invalidResponse }
-            return final
+        guard let envelope = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let value = Self.rewrittenText(in: envelope)
+        else {
+            throw AIProviderError.invalidResponse
         }
 
-        throw AIProviderError.invalidResponse
+        let final = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !final.isEmpty else { throw AIProviderError.invalidResponse }
+        return final
+    }
+
+    /// `--output-format json --json-schema` wraps the schema object in the CLI's
+    /// result envelope: it is in `structured_output`, and `result` holds the same
+    /// object as a JSON string.
+    static func rewrittenText(in envelope: [String: Any]) -> String? {
+        if let structured = envelope["structured_output"] as? [String: Any],
+           let value = structured["rewritten_text"] as? String
+        {
+            return value
+        }
+
+        if let value = envelope["rewritten_text"] as? String {
+            return value
+        }
+
+        if let result = envelope["result"] as? String,
+           let resultData = result.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: resultData) as? [String: Any],
+           let value = object["rewritten_text"] as? String
+        {
+            return value
+        }
+
+        return nil
     }
 
     private func isLikelyAssistantReply(input: String, output: String) -> Bool {
@@ -302,6 +327,24 @@ public final nonisolated class ClaudeCodeProvider: AIProviderProtocol, Sendable 
 
     // MARK: - Command Execution
 
+    /// Apps launched from Finder get a minimal PATH, so npm-installed `claude`
+    /// (a `#!/usr/bin/env node` script) cannot find `node`. Add the CLI's own
+    /// directory and the usual Homebrew locations.
+    static func commandEnvironment(executableURL: URL) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let existing = (environment["PATH"] ?? "").split(separator: ":").map(String.init)
+        let extra = [
+            executableURL.deletingLastPathComponent().path,
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+        ]
+        var seen = Set<String>()
+        let path = (extra + existing + ["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
+        environment["PATH"] = path.joined(separator: ":")
+        return environment
+    }
+
     private func runClaudeCommand(
         executableURL: URL,
         arguments: [String],
@@ -312,6 +355,7 @@ public final nonisolated class ClaudeCodeProvider: AIProviderProtocol, Sendable 
                 let process = Process()
                 process.executableURL = executableURL
                 process.arguments = arguments
+                process.environment = Self.commandEnvironment(executableURL: executableURL)
 
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()

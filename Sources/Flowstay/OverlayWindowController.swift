@@ -500,6 +500,16 @@ final class OverlayWindowController: NSObject {
             return
         }
 
+        // A new state can arrive while the outcome hide is fading the window out.
+        // That hide was cancelled, so fade back in rather than staying invisible.
+        if window.alphaValue < 1 {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = Constants.revealDuration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                self.window.animator().alphaValue = 1
+            }
+        }
+
         guard frameHasMeaningfulDelta(current: window.frame, target: placement.frame) else { return }
         frameAnimationGeneration += 1
         let generation = frameAnimationGeneration

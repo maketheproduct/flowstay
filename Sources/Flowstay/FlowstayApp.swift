@@ -48,14 +48,14 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     private var recordingTargetApp: DetectedApp?
     private var previousRecordingState = false
     private var isAwaitingTranscriptionCompletion = false
-    private var overlayProcessingTimeoutTask: Task<Void, Never>?
+    private var overlayProcessingTimeoutTask: DispatchWorkItem?
     private var isHotkeyStartPending = false
     private var queuedStartRequest = false
     private var queuedStartRequestedAt: Date?
     private var isHoldToTalkHotkeyPressed = false
     private var holdToTalkSessionActive = false
     private var stopHoldToTalkAfterTransition = false
-    private var hotkeyWarmupTask: Task<Void, Never>?
+    private var hotkeyWarmupTask: DispatchWorkItem?
     private var hotkeyStartupFeedbackTask: Task<Void, Never>?
     private var overlayOutcomeVisibleUntil: Date?
     private var overlayOutcomeState: OverlayOutcomeState?
@@ -210,6 +210,9 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     @MainActor
     private func handleApplicationWillTerminate() {
         logger.info("[AppDelegate] applicationWillTerminate - cleaning up")
+        // A clean quit (including Sparkle relaunches) mid-recording is not a startup
+        // crash, so it must not put the next launch into recording safe mode.
+        UserDefaults.standard.recordingStartupPending = false
         overlayProcessingTimeoutTask?.cancel()
         overlayProcessingTimeoutTask = nil
         hotkeyWarmupTask?.cancel()
@@ -819,15 +822,12 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     @MainActor
     private func startOverlayProcessingTimeout() {
         cancelOverlayProcessingTimeout()
-        overlayProcessingTimeoutTask = Task { [weak self] in
-            do {
-                try await Task.sleep(for: .seconds(12))
-            } catch {
-                return
-            }
-
-            await MainActor.run {
+        // A main-queue work item rather than a sleeping Task: cancelling a Task parked in
+        // Task.sleep here crashed 1.6.28 test builds in swift_task_dealloc.
+        let workItem = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
                 guard let self else { return }
+                self.overlayProcessingTimeoutTask = nil
                 guard self.isAwaitingTranscriptionCompletion, !self.engineCoordinator.isRecording else {
                     return
                 }
@@ -836,10 +836,11 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
                 if self.consumeAwaitingOverlayCompletion() {
                     self.stageOverlayOutcome(success: false)
                 }
-                self.overlayProcessingTimeoutTask = nil
                 self.applyOverlayVisibility(reason: "processing-timeout")
             }
         }
+        overlayProcessingTimeoutTask = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: workItem)
     }
 
     @MainActor
@@ -1022,20 +1023,15 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
     @MainActor
     private func startHotkeyWarmupTimeout() {
         hotkeyWarmupTask?.cancel()
-        hotkeyWarmupTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                try await Task.sleep(for: .seconds(12))
-            } catch {
-                return
-            }
-
-            await MainActor.run { [weak self] in
+        let workItem = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
                 guard let self else { return }
-                let timeoutDecision = HotkeyStartPolicy.onWarmupTimeout(queuedStartRequest: queuedStartRequest)
-                applyHotkeyDecision(timeoutDecision)
+                let timeoutDecision = HotkeyStartPolicy.onWarmupTimeout(queuedStartRequest: self.queuedStartRequest)
+                self.applyHotkeyDecision(timeoutDecision)
             }
         }
+        hotkeyWarmupTask = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: workItem)
     }
 
     @MainActor

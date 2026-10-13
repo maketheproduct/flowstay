@@ -350,8 +350,7 @@ public actor TranscriptionHistoryStore {
         }
 
         // Extract text sections
-        let rawText = extractSection(from: body, header: "## Original Transcription")
-        let processedText = extractSection(from: body, header: "## Processed Text")
+        let (rawText, processedText) = Self.extractTextSections(from: body)
 
         return TranscriptionRecord(
             id: id,
@@ -366,19 +365,24 @@ public actor TranscriptionHistoryStore {
         )
     }
 
-    /// Extract text content after a markdown header
-    private func extractSection(from body: String, header: String) -> String {
-        guard let headerRange = body.range(of: header) else { return "" }
+    /// Split the body into its two sections. The processed text is always the last
+    /// section and may contain its own markdown headings (persona output), so only
+    /// the section markers are treated as boundaries.
+    static func extractTextSections(from body: String) -> (raw: String, processed: String) {
+        let originalHeader = "## Original Transcription"
+        let processedHeader = "\n## Processed Text"
 
-        let afterHeader = String(body[headerRange.upperBound...])
-
-        // Find the next header or end of string
-        if let nextHeaderRange = afterHeader.range(of: "\n## ") {
-            return String(afterHeader[..<nextHeaderRange.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
+        let afterOriginal = body.range(of: originalHeader).map { body[$0.upperBound...] } ?? body[...]
+        guard let processedRange = afterOriginal.range(of: processedHeader) else {
+            return (afterOriginal.trimmingCharacters(in: .whitespacesAndNewlines), "")
         }
 
-        return afterHeader.trimmingCharacters(in: .whitespacesAndNewlines)
+        let raw = afterOriginal[..<processedRange.lowerBound]
+        let processed = afterOriginal[processedRange.upperBound...]
+        return (
+            raw.trimmingCharacters(in: .whitespacesAndNewlines),
+            processed.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 
     // MARK: - Statistics
