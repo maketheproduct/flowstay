@@ -88,6 +88,73 @@ enum AudioInputDeviceMonitor {
     }
 }
 
+/// Reports when the device being recorded from goes away (unplugged, Bluetooth dropped).
+/// Property listeners do not open the input, so this is safe to keep only while recording.
+@MainActor
+final class AudioInputDeviceLossObserver {
+    private let deviceID: AudioDeviceID
+    private var addresses = [
+        AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        ),
+        AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        ),
+    ]
+    private var listener: AudioObjectPropertyListenerBlock?
+
+    init(deviceID: AudioDeviceID, onLost: @escaping @MainActor () -> Void) {
+        self.deviceID = deviceID
+        let listener: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            MainActor.assumeIsolated {
+                guard let self, self.listener != nil, !isAudioDeviceAlive(deviceID) else { return }
+                self.invalidate()
+                onLost()
+            }
+        }
+        self.listener = listener
+        AudioObjectAddPropertyListenerBlock(deviceID, &addresses[0], DispatchQueue.main, listener)
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &addresses[1],
+            DispatchQueue.main,
+            listener
+        )
+    }
+
+    func invalidate() {
+        guard let listener else { return }
+        self.listener = nil
+        AudioObjectRemovePropertyListenerBlock(deviceID, &addresses[0], DispatchQueue.main, listener)
+        AudioObjectRemovePropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject),
+            &addresses[1],
+            DispatchQueue.main,
+            listener
+        )
+    }
+}
+
+/// A removed device can still report "alive" briefly, so also require it to be listed.
+private func isAudioDeviceAlive(_ deviceID: AudioDeviceID) -> Bool {
+    var address = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    var size: UInt32 = 0
+    let systemObject = AudioObjectID(kAudioObjectSystemObject)
+    guard AudioObjectGetPropertyDataSize(systemObject, &address, 0, nil, &size) == noErr else { return true }
+    var deviceIDs = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
+    guard AudioObjectGetPropertyData(systemObject, &address, 0, nil, &size, &deviceIDs) == noErr else { return true }
+    guard deviceIDs.contains(deviceID) else { return false }
+    return (readUInt32Property(deviceID: deviceID, selector: kAudioDevicePropertyDeviceIsAlive) ?? 0) != 0
+}
+
 final actor CoreAudioHALInputCapture: AudioInputCaptureBackend {
     private static let inputBus: UInt32 = 1
     private let logger = Logger(subsystem: "com.flowstay.app", category: "CoreAudioHALInputCapture")

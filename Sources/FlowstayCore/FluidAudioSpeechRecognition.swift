@@ -381,6 +381,7 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
     private let avAudioEngineFallbackBackend: any AudioInputCaptureBackend
     private var activeCaptureBackend: (any AudioInputCaptureBackend)?
     private var activeCaptureBackendKind: AudioCaptureBackendKind?
+    private var inputDeviceLossObserver: AudioInputDeviceLossObserver?
     private var latestAudioStartupMetrics: AudioStartupMetrics?
     /// One-way latch. After `shutdown()`, this instance is permanently unusable and
     /// subsequent entry points must bail out instead of attempting to rearm it.
@@ -472,6 +473,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
         sampleContinuation = nil
         sampleConsumerTask?.cancel()
         sampleConsumerTask = nil
+        inputDeviceLossObserver?.invalidate()
+        inputDeviceLossObserver = nil
         let backend = activeCaptureBackend
         activeCaptureBackend = nil
         activeCaptureBackendKind = nil
@@ -818,6 +821,9 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
             errorCode: nil
         )
         isRecording = true
+        inputDeviceLossObserver = AudioInputDeviceLossObserver(deviceID: snapshot.deviceID) { [weak self] in
+            self?.handleRecordingInputLost()
+        }
         startAudioLevelMonitoring()
         armSilenceDetection()
         logger.info("[FluidAudioSpeechRecognition] Recording started after verified sample delivery")
@@ -895,6 +901,8 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
 
         // Mark as stopped for UI immediately
         isRecording = false
+        inputDeviceLossObserver?.invalidate()
+        inputDeviceLossObserver = nil
         audioLevel = 0.0
         waveformSamples = []
         stopAudioLevelMonitoring()
@@ -988,6 +996,19 @@ public final class FluidAudioSpeechRecognition: NSObject, ObservableObject {
                 )
             )
         }
+    }
+
+    /// The microphone went away mid-recording: stop and transcribe what was captured
+    /// instead of showing "recording" with no audio arriving.
+    private func handleRecordingInputLost() {
+        guard isRecording else { return }
+        logger.warning("[FluidAudioSpeechRecognition] Input device disconnected during recording; stopping")
+        NotificationManager.shared.sendNotification(
+            title: "Microphone disconnected",
+            body: "Recording stopped. Flowstay transcribed what it heard before the microphone was lost.",
+            identifier: "input-device-lost"
+        )
+        stopRecording()
     }
 
     fileprivate func applyProcessedAudioResult(_ result: AudioBufferProcessingResult) {
