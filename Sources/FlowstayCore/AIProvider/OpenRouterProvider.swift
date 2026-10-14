@@ -10,17 +10,15 @@ public final nonisolated class OpenRouterProvider: AIProviderProtocol, Sendable 
     private let networkService: OpenRouterNetworkService
     private let logger = Logger(subsystem: "com.flowstay.core", category: "OpenRouterProvider")
 
-    /// Default free model to use if none selected (updated to current available model)
-    public static let defaultFreeModel = "meta-llama/llama-3.2-3b-instruct:free"
+    /// Last-resort model ID when the model list hasn't loaded.
+    public static let defaultFreeModel = "google/gemma-4-31b-it:free"
 
-    /// Fallback models in order of preference (in case default is unavailable)
-    private static let fallbackModels = [
-        "meta-llama/llama-3.2-3b-instruct:free",
-        "meta-llama/llama-3.3-8b-instruct:free",
-        "google/gemma-2-9b-it:free",
-        "qwen/qwen-2.5-7b-instruct:free",
-        "mistralai/mistral-7b-instruct:free",
-    ]
+    /// Providers whose free models are general-purpose chat models, in order of preference.
+    /// Free models come and go often, so the newest one from these providers is picked at run time.
+    private static let preferredFreeProviders = ["google/gemma", "meta-llama/", "mistralai/", "qwen/", "openai/"]
+
+    /// Free models built for something other than rewriting text.
+    private static let unsuitableModelMarkers = ["code", "coder", "safety", "guard", "embed", "vision", "reasoning"]
 
     public init(keychainService: KeychainServiceProtocol = KeychainService.shared) {
         self.keychainService = keychainService
@@ -78,19 +76,21 @@ public final nonisolated class OpenRouterProvider: AIProviderProtocol, Sendable 
             logger.warning("[OpenRouterProvider] Requested model '\(requestedId)' not found, falling back")
         }
 
-        // Try fallback models
-        for fallback in Self.fallbackModels {
-            if cache.model(for: fallback) != nil {
-                return fallback
+        return Self.preferredFreeModel(from: cache.freeModels)?.id ?? Self.defaultFreeModel
+    }
+
+    /// Picks the newest general-purpose free model, preferring well-known providers.
+    static func preferredFreeModel(from freeModels: [OpenRouterModel]) -> OpenRouterModel? {
+        let suitable = freeModels.filter { model in
+            let id = model.id.lowercased()
+            return !unsuitableModelMarkers.contains { id.contains($0) }
+        }
+        let newestFirst = suitable.sorted { ($0.created ?? 0) > ($1.created ?? 0) }
+        for provider in preferredFreeProviders {
+            if let model = newestFirst.first(where: { $0.id.hasPrefix(provider) }) {
+                return model
             }
         }
-
-        // If we have any free models, use the first one
-        if let firstFree = cache.freeModels.first {
-            return firstFree.id
-        }
-
-        // Last resort: return default (API will error if invalid, but that's better than nothing)
-        return Self.defaultFreeModel
+        return newestFirst.first
     }
 }

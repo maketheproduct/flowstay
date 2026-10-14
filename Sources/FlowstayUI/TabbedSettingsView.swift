@@ -1749,10 +1749,11 @@ struct PersonasTab: View {
                     Text("Haiku (Fast)").tag("haiku")
                     Text("Sonnet (Balanced)").tag("sonnet")
                     Text("Opus (Highest quality)").tag("opus")
+                    Text("Fable (Most capable, slowest)").tag("fable")
                 }
                 .pickerStyle(.menu)
 
-                Text("Haiku is usually fastest. Sonnet is a good default for quality and speed.")
+                Text("These always use the newest version of each model. Haiku is usually fastest; Sonnet is a good default.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 

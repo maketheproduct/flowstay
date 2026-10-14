@@ -30,34 +30,6 @@ public class OpenRouterModelCache: ObservableObject {
         models.filter { !$0.isFree && $0.isTextModel }
     }
 
-    /// Popular free models (curated list for better UX)
-    public var recommendedFreeModels: [OpenRouterModel] {
-        let recommendedIds = [
-            "meta-llama/llama-3.3-8b-instruct:free",
-            "meta-llama/llama-3.2-3b-instruct:free",
-            "google/gemma-2-9b-it:free",
-            "mistralai/mistral-7b-instruct:free",
-            "qwen/qwen-2.5-7b-instruct:free",
-        ]
-        return recommendedIds.compactMap { id in
-            models.first { $0.id == id }
-        }
-    }
-
-    /// Popular paid models (curated list)
-    public var recommendedPaidModels: [OpenRouterModel] {
-        let recommendedIds = [
-            "anthropic/claude-sonnet-4",
-            "openai/gpt-4o",
-            "openai/gpt-4o-mini",
-            "google/gemini-2.0-flash-001",
-            "anthropic/claude-3.5-haiku",
-        ]
-        return recommendedIds.compactMap { id in
-            models.first { $0.id == id }
-        }
-    }
-
     /// Check if cache needs refresh
     public var needsRefresh: Bool {
         guard let lastFetched else { return true }

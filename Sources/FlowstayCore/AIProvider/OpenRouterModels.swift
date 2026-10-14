@@ -8,6 +8,8 @@ public nonisolated struct OpenRouterModel: Identifiable, Codable, Sendable, Hash
     public let contextLength: Int
     public let pricing: OpenRouterPricing
     public let architecture: OpenRouterArchitecture?
+    /// Unix time the model was added to OpenRouter; missing from older caches.
+    public let created: Int?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -16,6 +18,7 @@ public nonisolated struct OpenRouterModel: Identifiable, Codable, Sendable, Hash
         case contextLength = "context_length"
         case pricing
         case architecture
+        case created
     }
 
     /// Whether this model is free to use
