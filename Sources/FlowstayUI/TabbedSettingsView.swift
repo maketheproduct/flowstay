@@ -1348,7 +1348,7 @@ struct PersonasTab: View {
                                         if !appState.appRules.isEmpty {
                                             ScrollView {
                                                 LazyVStack(spacing: 8) {
-                                                    ForEach(appState.appRules.sorted(by: { $0.appName < $1.appName })) { rule in
+                                                    ForEach(appState.appRules.sorted(by: { $0.appName.localizedStandardCompare($1.appName) == .orderedAscending })) { rule in
                                                         HStack(spacing: 12) {
                                                             if let iconData = rule.appIcon,
                                                                let nsImage = NSImage(data: iconData)
@@ -1360,6 +1360,7 @@ struct PersonasTab: View {
                                                                 Image(systemName: "app.fill")
                                                                     .font(.system(size: 24))
                                                                     .foregroundStyle(.secondary)
+                                                                    .frame(width: 32, height: 32)
                                                             }
 
                                                             VStack(alignment: .leading, spacing: 2) {
@@ -1397,14 +1398,11 @@ struct PersonasTab: View {
 
                                                             HStack(spacing: 8) {
                                                                 Button {
-                                                                    // Find the app and show picker
-                                                                    if let iconData = rule.appIcon, let icon = NSImage(data: iconData) {
-                                                                        showingAppRulePicker = DetectedApp(
-                                                                            bundleId: rule.appBundleId,
-                                                                            name: rule.appName,
-                                                                            icon: icon
-                                                                        )
-                                                                    }
+                                                                    showingAppRulePicker = DetectedApp(
+                                                                        bundleId: rule.appBundleId,
+                                                                        name: rule.appName,
+                                                                        icon: rule.appIcon.flatMap(NSImage.init(data:))
+                                                                    )
                                                                 } label: {
                                                                     Image(systemName: "pencil")
                                                                         .foregroundStyle(.secondary)
@@ -1819,14 +1817,15 @@ struct AppSelectorView: View {
     let appState: AppState
     let onSelectApp: (DetectedApp) -> Void
     let onDismiss: () -> Void
-    @State private var runningApps: [DetectedApp] = []
+    @State private var apps: [DetectedApp] = []
+    @State private var isLoading = true
     @State private var searchText = ""
 
     var filteredApps: [DetectedApp] {
         if searchText.isEmpty {
-            return runningApps
+            return apps
         }
-        return runningApps.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+        return apps.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
     }
 
     var body: some View {
@@ -1837,64 +1836,23 @@ struct AppSelectorView: View {
             TextField("Search apps...", text: $searchText)
                 .textFieldStyle(.roundedBorder)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(filteredApps) { app in
-                        Button {
-                            onSelectApp(app)
-                        } label: {
-                            HStack(spacing: 12) {
-                                if let icon = app.icon {
-                                    Image(nsImage: icon)
-                                        .resizable()
-                                        .frame(width: 32, height: 32)
-                                } else {
-                                    Image(systemName: "app.fill")
-                                        .font(.system(size: 24))
-                                        .foregroundStyle(.secondary)
-                                }
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(app.name)
-                                        .font(.subheadline)
-
-                                    // Show if rule already exists
-                                    if let rule = appState.appRules.first(where: { $0.appBundleId == app.bundleId }) {
-                                        if let persona = appState.allPersonas.first(where: { $0.id == rule.personaId }) {
-                                            Text("Currently: \(persona.name)")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        } else if rule.personaId == "none" {
-                                            Text("Currently: No persona")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        } else {
-                                            Text("Currently: Unknown persona")
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    } else {
-                                        Text("No rule set")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-
-                                Spacer()
-
-                                Image(systemName: "chevron.right")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .padding(10)
-                            .background(Color.secondary.opacity(0.05))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                        }
-                        .buttonStyle(.plain)
-                    }
+            List(filteredApps) { app in
+                Button {
+                    onSelectApp(app)
+                } label: {
+                    AppSelectorRow(app: app, ruleSummary: ruleSummary(for: app))
+                }
+                .buttonStyle(.plain)
+            }
+            .listStyle(.inset)
+            .overlay {
+                if isLoading {
+                    ProgressView()
+                } else if filteredApps.isEmpty {
+                    Text("No apps found")
+                        .foregroundStyle(.secondary)
                 }
             }
-            .frame(maxHeight: 400)
 
             HStack {
                 Button("Cancel") {
@@ -1906,36 +1864,61 @@ struct AppSelectorView: View {
             }
         }
         .padding()
-        .frame(width: 450)
-        .onAppear {
-            loadRunningApps()
+        .frame(width: 450, height: 520)
+        .task {
+            apps = await AppDetectionService.shared.availableApps()
+            isLoading = false
         }
     }
 
-    private func loadRunningApps() {
-        let workspace = NSWorkspace.shared
-        let apps = workspace.runningApplications
-            .filter { app in
-                guard app.bundleIdentifier != nil,
-                      app.localizedName != nil,
-                      app.activationPolicy == .regular else { return false }
+    private func ruleSummary(for app: DetectedApp) -> String {
+        guard let rule = appState.appRules.first(where: { $0.appBundleId == app.bundleId }) else {
+            return "No rule set"
+        }
+        if rule.personaId == "none" {
+            return "Currently: No persona"
+        }
+        if let persona = appState.allPersonas.first(where: { $0.id == rule.personaId }) {
+            return "Currently: \(persona.name)"
+        }
+        return "Currently: Unknown persona"
+    }
+}
 
-                // Exclude Flowstay itself
-                return app.bundleIdentifier != Bundle.main.bundleIdentifier
+private struct AppSelectorRow: View {
+    let app: DetectedApp
+    let ruleSummary: String
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Group {
+                if let icon = app.icon {
+                    Image(nsImage: icon)
+                        .resizable()
+                } else {
+                    Image(systemName: "app.fill")
+                        .font(.system(size: 24))
+                        .foregroundStyle(.secondary)
+                }
             }
-            .compactMap { app -> DetectedApp? in
-                guard let bundleId = app.bundleIdentifier,
-                      let name = app.localizedName else { return nil }
+            .frame(width: 32, height: 32)
 
-                return DetectedApp(
-                    bundleId: bundleId,
-                    name: name,
-                    icon: app.icon
-                )
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.name)
+                    .font(.subheadline)
+                Text(ruleSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .sorted { $0.name < $1.name }
 
-        runningApps = apps
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
     }
 }
 
@@ -1967,9 +1950,7 @@ struct AppRulePickerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
-                if let iconData = AppDetectionService.shared.getIconData(for: app),
-                   let nsImage = NSImage(data: iconData)
-                {
+                if let nsImage = app.icon {
                     Image(nsImage: nsImage)
                         .resizable()
                         .frame(width: 48, height: 48)

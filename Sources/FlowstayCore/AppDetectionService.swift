@@ -81,6 +81,47 @@ public class AppDetectionService: ObservableObject {
         logger.info("[AppDetection] Detected: \(name) (\(bundleId))")
     }
 
+    /// Apps the user can make rules for: everything installed in the usual app folders plus
+    /// anything running from elsewhere. Sorted by name, one entry per bundle ID, excluding Flowstay.
+    public func availableApps() async -> [DetectedApp] {
+        let running = NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> DetectedApp? in
+                guard let bundleId = app.bundleIdentifier, let name = app.localizedName else { return nil }
+                return DetectedApp(bundleId: bundleId, name: name, icon: app.icon)
+            }
+        let installed = await Task.detached(priority: .userInitiated) { Self.installedApps() }.value
+        return Self.mergeApps(installed + running, excluding: Bundle.main.bundleIdentifier)
+    }
+
+    nonisolated static func mergeApps(_ apps: [DetectedApp], excluding excludedBundleId: String?) -> [DetectedApp] {
+        var seen = Set<String>()
+        return apps
+            .filter { $0.bundleId != excludedBundleId && seen.insert($0.bundleId).inserted }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+    private nonisolated static func installedApps() -> [DetectedApp] {
+        let fileManager = FileManager.default
+        let folders = [
+            URL(fileURLWithPath: "/Applications"),
+            URL(fileURLWithPath: "/Applications/Utilities"),
+            URL(fileURLWithPath: "/System/Applications"),
+            URL(fileURLWithPath: "/System/Applications/Utilities"),
+            fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Applications"),
+        ]
+        return folders.flatMap { folder -> [DetectedApp] in
+            let contents = (try? fileManager.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? []
+            return contents
+                .filter { $0.pathExtension == "app" }
+                .compactMap { url in
+                    guard let bundleId = Bundle(url: url)?.bundleIdentifier else { return nil }
+                    let name = (fileManager.displayName(atPath: url.path) as NSString).deletingPathExtension
+                    return DetectedApp(bundleId: bundleId, name: name, icon: NSWorkspace.shared.icon(forFile: url.path))
+                }
+        }
+    }
+
     /// Get icon data (PNG) for storage
     public func getIconData(for app: DetectedApp) -> Data? {
         guard let icon = app.icon else { return nil }
