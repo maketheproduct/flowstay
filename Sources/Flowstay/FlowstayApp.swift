@@ -435,7 +435,8 @@ class FlowstayAppDelegate: NSObject, NSApplicationDelegate, MenuBarPopoverContro
         processedText = result.text
         overlayOutcomeSuccess = result.isSuccess
         processingTimer.cancel()
-        usedPersonaId = personaId
+        // A failed persona falls back to the raw text, so don't label it with the persona.
+        usedPersonaId = result.isSuccess ? personaId : nil
 
         logger.info("[AppDelegate] Personas processing complete (\(processedText.count) chars)")
         return PersonaProcessingOutcome(
